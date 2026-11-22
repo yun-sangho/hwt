@@ -25,7 +25,11 @@ in a ledger under `.git/hwt/`, so a restarted session picks up where the last on
 
 ## Install
 
-Download the binary for your platform from the releases page and put it on your PATH, or build it:
+```sh
+brew install yun-sangho/tap/hwt
+```
+
+Or download the binary for your platform from the releases page and put it on your PATH, or build it:
 
 ```sh
 bun install && bun run build      # → dist/hwt
