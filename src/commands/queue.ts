@@ -17,10 +17,10 @@ const TASK_USAGE = "hwt task add|ls|decide|done|drop";
 
 export function cmdTask(args: string[]): void {
   const [sub = "ls", ...rest] = args;
-  const main = repoMain();
   switch (sub) {
     case "add": {
       const a = parse(rest, { opts: ["touches", "detail"] }, "hwt task add <title> [--touches p1,p2] [--detail TEXT]");
+      const main = repoMain();
       const title = a.pos.join(" ");
       if (!title) die("usage: hwt task add <title> [--touches p1,p2] [--detail TEXT]");
       const touches = a.opt.touches ?? "";
@@ -41,6 +41,7 @@ export function cmdTask(args: string[]): void {
       return printJson({ task: id, from, state: "queued" });
     }
     case "ls": {
+      const main = repoMain();
       const all = rest[0] === "--all";
       const l = readLedger(main);
       const active = Object.entries(l.worktrees)
@@ -58,6 +59,7 @@ export function cmdTask(args: string[]): void {
     }
     case "decide": {
       const a = parse(rest, { opts: ["why"] }, "hwt task decide <id> now|later|after:<branch> --why TEXT");
+      const main = repoMain();
       const [id, d] = a.pos;
       if (!id || !d) die("usage: hwt task decide <id> now|later|after:<branch> --why TEXT");
       if (!(d === "now" || d === "later" || d.startsWith("after:"))) die("decision is now, later or after:<branch>");
@@ -72,6 +74,7 @@ export function cmdTask(args: string[]): void {
     case "done":
     case "drop": {
       const a = parse(rest, { opts: ["why"] }, `hwt task ${sub} <id> [--why TEXT]`);
+      const main = repoMain();
       const id = a.pos[0] ?? die(`usage: hwt task ${sub} <id> [--why TEXT]`);
       const known = updateLedger(main, (l) => {
         for (const t of l.tasks ?? []) {
@@ -172,10 +175,10 @@ const MQ_STATES: MergeState[] = ["merging", "verifying", "done", "returned", "fa
 
 export function cmdMq(args: string[]): void {
   const [sub = "ls", ...rest] = args;
-  const main = repoMain();
   switch (sub) {
     case "add": {
       const a = parse(rest, { opts: ["pr"] }, "hwt mq add [--pr N] [TEXT]");
+      const main = repoMain();
       const text = a.pos.join(" ");
       const pr = a.opt.pr ? Number(a.opt.pr) : null;
       if (a.opt.pr && !Number.isInteger(pr)) die(`--pr needs a number: ${a.opt.pr}`);
@@ -195,6 +198,7 @@ export function cmdMq(args: string[]): void {
     }
     case "ls":
     case "next": {
+      const main = repoMain();
       const all = rest[0] === "--all";
       const l = readLedger(main);
       const items = (l.merges ?? [])
@@ -214,6 +218,7 @@ export function cmdMq(args: string[]): void {
     }
     case "approve": {
       const a = parse(rest, { opts: ["why"] }, "hwt mq approve <id> [--why TEXT]");
+      const main = repoMain();
       const id = a.pos[0] ?? die("usage: hwt mq approve <id> [--why TEXT]");
       const found = updateLedger(main, (l) => {
         for (const m of l.merges ?? []) {
@@ -227,6 +232,7 @@ export function cmdMq(args: string[]): void {
     }
     case "set": {
       const a = parse(rest, { opts: ["why"] }, "hwt mq set <id> <state> [--why TEXT]");
+      const main = repoMain();
       const [id, st] = a.pos;
       if (!id || !st) die("usage: hwt mq set <id> <state> [--why TEXT]");
       if (!MQ_STATES.includes(st as MergeState)) die(`state: ${MQ_STATES.join("|")}`);

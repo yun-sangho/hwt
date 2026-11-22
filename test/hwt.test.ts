@@ -227,6 +227,11 @@ describe("main-session workflow", () => {
     expect(r.code).toBe(0);
     expect(r.out).toStartWith("usage: hwt task add");
     expect(json(hwt(["task", "ls", "--all"]))).toEqual([]);
+    for (const cmd of [["task", "add", "--help"], ["mq", "add", "-h"], ["new", "--help"]]) {
+      const out = hwt(cmd, { cwd: dir }); // outside any git repo (what brew test does)
+      expect(out.code).toBe(0);
+      expect(out.out).toStartWith("usage:");
+    }
   });
 
   test("note and status", () => {

@@ -22,7 +22,7 @@ const asset = (os: string, arch: string) => {
 };
 
 process.stdout.write(`class Hwt < Formula
-  desc "Git worktrees as Herdr spaces, with a ledger for running coding agents in parallel"
+  desc "Git worktrees as Herdr spaces, with a ledger for parallel coding agents"
   homepage "https://github.com/${repo}"
   version "${version}"
   license "MIT"
