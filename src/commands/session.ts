@@ -3,7 +3,7 @@ import { codexAdapter, sessionFromEnv } from "../agents.ts";
 import { currentBranch, repoMain, samePath, toplevel, worktreeList } from "../git.ts";
 import * as herdr from "../herdr.ts";
 import { ack, appendInbox, readInbox, readLedger, unackedInbox, updateLedger } from "../ledger.ts";
-import { claimMain, mainLabel, resolveMain } from "../session.ts";
+import { claimMain, mainLabel, mainOnly, resolveMain } from "../session.ts";
 import { basename, die, has, inboxId, printJson, run, sleepMs, stamp } from "../util.ts";
 
 export function cmdClaim(): void {
@@ -59,12 +59,14 @@ export function cmdTell(args: string[]): void {
 /** hwt inbox [--all]: messages not yet acked (all with --all), one JSON object per line. */
 export function cmdInbox(args: string[]): void {
   const main = repoMain();
+  mainOnly(main, "inbox");
   const list = args[0] === "--all" ? readInbox(main) : unackedInbox(main);
   for (const m of list) process.stdout.write(JSON.stringify(m) + "\n");
 }
 
 export function cmdAck(args: string[]): void {
   const main = repoMain();
+  mainOnly(main, "ack");
   if (args[0] === "--all") ack(main, unackedInbox(main).map((m) => m.id));
   else if (args.length) ack(main, args);
   else die("usage: hwt ack <id>...|--all");
@@ -158,6 +160,7 @@ export function cmdStatus(args: string[]): void {
 export function cmdWait(args: string[]): void {
   const timeout = args[0] === "--timeout" ? Number(args[1] ?? 1800) : 1800;
   const main = repoMain();
+  mainOnly(main, "wait");
   const end = Date.now() + timeout * 1000;
   while (Date.now() < end) {
     const n = unackedInbox(main);

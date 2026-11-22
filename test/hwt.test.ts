@@ -202,6 +202,33 @@ describe("main-session workflow", () => {
     expect(hwt(["mq", "set", add.merge, "bogus"]).code).toBe(1);
   });
 
+  test("inbox, ack and wait are the main's: refused in a working worktree", () => {
+    config({ mainSession: true, lang: "ko" });
+    const wt = json(hwt(["new", "feat/q", "--no-space"])).path;
+    for (const cmd of [["inbox"], ["ack", "--all"], ["wait", "--timeout", "1"]]) {
+      const r = hwt(cmd, { cwd: wt });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("hwt tell");
+      expect(r.err).toContain("gh pr view");
+    }
+    expect(hwt(["inbox"]).code).toBe(0);
+  });
+
+  test("worker instructions say how to wait for the merge", () => {
+    config({ mainSession: true });
+    hwt(["new", "feat/i", "--task", "go"]);
+    const task = (fake().calls[0]!.arg.argv as string[]).at(-1)!;
+    expect(task).toContain("gh pr view <n> --json state");
+    expect(task).toContain("[rebase request]");
+  });
+
+  test("--help prints usage and adds nothing", () => {
+    const r = hwt(["task", "add", "--help"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toStartWith("usage: hwt task add");
+    expect(json(hwt(["task", "ls", "--all"]))).toEqual([]);
+  });
+
   test("note and status", () => {
     config({ mainSession: true });
     hwt(["new", "feat/s", "--no-space", "--title", "S"]);

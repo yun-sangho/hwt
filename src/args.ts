@@ -30,6 +30,10 @@ export function parse(args: string[], spec: Spec, usage: string): Parsed {
       pos.push(...args.slice(i + 1));
       break;
     }
+    if (a === "--help" || a === "-h") {
+      process.stdout.write(`usage: ${usage}\n`);
+      process.exit(0);
+    }
     if (spec.alias?.[a]) a = spec.alias[a]!;
     if (!a.startsWith("--") || a === "--") {
       if (a.startsWith("-") && a.length > 1 && !/^-\d/.test(a)) die(`unknown option ${a}\nusage: ${usage}`);

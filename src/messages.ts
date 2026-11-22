@@ -14,7 +14,7 @@ export interface Messages {
   };
   workerInstructions(self: string): string;
   taskProposal(id: string, title: string, touches: string): string;
-  mainOnly(main: string, cmd: string, tag: string, sessions: string): string;
+  mainOnly(main: string, cmd: string, sessions: string): string;
   sessionStartMain(repo: string, claimed: boolean): string;
   sessionStartWorker(repo: string, wt: string, branch: string, self: string): string;
 }
@@ -32,12 +32,15 @@ const en: Messages = {
     `[hwt] Send the main session only what it has to decide, with \`${self} tell "..."\` (never hc send): ` +
     `[worktree request], [task proposal] (\`${self} task add\`), [merge request] (\`${self} mq add --pr <n>\`), ` +
     `and anything that affects other work. Questions that only matter inside this task go straight to the person ` +
-    `on this screen, not through the main session. If their answer is a decision other work depends on, tell the main session with [decision].`,
+    `on this screen, not through the main session. If their answer is a decision other work depends on, tell the main session with [decision]. ` +
+    `After mq add, wait for the merge with \`gh pr view <n> --json state\` (don't use ${self} wait, ack or inbox: they are the main session's). ` +
+    `If the main session sends a [rebase request] or similar, fix it and mq add again.`,
   taskProposal: (id, title, touches) =>
     `[task proposal] ${id} ${title}${touches ? ` (touches: ${touches})` : ""} — please decide with hwt task ls`,
-  mainOnly: (main, cmd, tag, sessions) =>
+  mainOnly: (main, cmd, sessions) =>
     `hwt ${cmd} runs only from the main session in ${main} (this repo's .hwt.json has mainSession).\n` +
-    `Ask it instead: hwt tell "${tag} ..."${sessions ? `  (main sessions now: ${sessions})` : ""}`,
+    `A working session reports with: hwt tell "[worktree request|task proposal|merge request|decision] ..." ` +
+    `(merge: hwt mq add --pr <n>; wait for the merge with gh pr view <n>)${sessions ? `  (main sessions now: ${sessions})` : ""}`,
   sessionStartMain: (repo, claimed) =>
     `[hwt] This session is the main session of ${repo}${claimed ? " (claimed: working sessions' hwt tell comes here)" : ""}. ` +
     `Work the hwt way: the task list is hwt task, record the person's decisions and permissions right away with hwt note, ` +
@@ -62,12 +65,15 @@ const ko: Messages = {
   workerInstructions: (self) =>
     `[hwt] 메인 세션에는 메인이 판단할 것만 \`${self} tell "..."\` 로 보낸다(hc send 금지): [워크트리 요청]·[작업 제안](\`${self} task add\`)·` +
     `[머지 요청](\`${self} mq add --pr <n>\`)·다른 작업에 영향을 주는 일. 이 작업 안에서만 필요한 질문은 메인을 거치지 않고 이 화면에서 ` +
-    `사용자에게 직접 묻는다. 그 답이 다른 작업에도 걸리는 결정이면 [결정 공유] 로 메인에 알린다.`,
+    `사용자에게 직접 묻는다. 그 답이 다른 작업에도 걸리는 결정이면 [결정 공유] 로 메인에 알린다. ` +
+    `mq add 뒤에는 \`gh pr view <n> --json state\` 로 머지를 기다린다(메인 전용인 ${self} wait·ack·inbox 는 쓰지 않는다). ` +
+    `메인이 [리베이스 요청] 등을 보내면 고쳐서 다시 mq add 한다.`,
   taskProposal: (id, title, touches) =>
     `[작업 제안] ${id} ${title}${touches ? ` (touches: ${touches})` : ""} — hwt task ls 로 판단해 주세요`,
-  mainOnly: (main, cmd, tag, sessions) =>
+  mainOnly: (main, cmd, sessions) =>
     `hwt ${cmd} 는 ${main} 의 메인 세션에서만 돈다(.hwt.json 의 mainSession).\n` +
-    `메인에게 요청한다: hwt tell "${tag} ..."${sessions ? `  (지금 메인 세션: ${sessions})` : ""}`,
+    `작업 세션은 hwt tell "[워크트리 요청|작업 제안|머지 요청|결정 공유] ..." 로 보고한다 ` +
+    `(머지: hwt mq add --pr <n>, 머지 대기는 gh pr view <n>)${sessions ? `  (지금 메인 세션: ${sessions})` : ""}`,
   sessionStartMain: (repo, claimed) =>
     `[hwt] 이 세션은 ${repo} 의 메인 세션이다${claimed ? " (hwt claim 완료, 작업 세션의 hwt tell 이 여기로 온다)" : ""}. ` +
     `작업 방식은 hwt 를 따른다: 작업 목록은 hwt task, 사용자 결정·허락은 받는 즉시 hwt note, 구현은 hwt new 로 작업 세션에 맡기고 ` +

@@ -42,8 +42,11 @@ export function resolveMain(main: string): string {
   return live[0]?.address ?? "";
 }
 
-/** With "mainSession": true in the main checkout's .hwt.json, refuse unless run from the main checkout. */
-export function mainOnly(main: string, cmd: "new" | "rm"): void {
+/**
+ * With "mainSession": true in the main checkout's .hwt.json, refuse unless run from the main checkout. Guards new,
+ * rm, and the main's own mailbox (inbox, ack, wait): a working session must not mark the main's mail handled.
+ */
+export function mainOnly(main: string, cmd: "new" | "rm" | "inbox" | "ack" | "wait"): void {
   if (process.env.HWT_ANYWHERE) return;
   if (!isMainSessionRepo(main)) return;
   if (samePath(toplevel(), main)) return;
@@ -52,6 +55,5 @@ export function mainOnly(main: string, cmd: "new" | "rm"): void {
     .filter((t) => herdr.isLive(t) && herdr.isAgent(t) && t.cwd === main)
     .map((t) => t.address)
     .join(" ");
-  const m = messages(langFor(main));
-  die(m.mainOnly(main, cmd, cmd === "new" ? m.tags.worktreeRequest : m.tags.stopRequest, sessions));
+  die(messages(langFor(main)).mainOnly(main, cmd, sessions));
 }
