@@ -1,0 +1,17 @@
+{
+  "name": "hwt",
+  "version": "0.1.0",
+  "description": "Git worktrees as Herdr spaces, with a ledger for running many coding agents in parallel",
+  "type": "module",
+  "bin": { "hwt": "src/cli.ts" },
+  "scripts": {
+    "hwt": "bun src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun scripts/build.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  }
+}

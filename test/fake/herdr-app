@@ -1,0 +1,37 @@
+#!/usr/bin/env bun
+// Fake herdr-app for tests: keeps spaces and terminals in $HWT_FAKE_STATE (shared with the fake hc).
+import { load, save, basename } from "./state.ts";
+
+const [cmd, sub, arg] = process.argv.slice(2);
+const s = load();
+const out = (v: unknown) => process.stdout.write(JSON.stringify(v) + "\n");
+
+if (cmd === "--version") out("herdr-app 0.0.0-fake");
+else if (process.env.HWT_FAKE_DOWN) process.exit(1);
+else if (cmd === "ls") out({ spaces: s.spaces });
+else if (cmd === "do") {
+  const a = JSON.parse(arg ?? "{}");
+  s.calls.push({ cmd: sub, arg: a });
+  if (sub === "space.new") {
+    const n = s.seq++;
+    const space = `sp${n}`;
+    const tab = `tb${n}`;
+    const terminal = `t${n}`;
+    const argv: string[] = a.argv ?? [];
+    // The agent is the program after `sh -c <script> sh`, else argv[0].
+    const prog = argv[0] === "sh" && argv[1] === "-c" ? argv[4] : argv[0];
+    s.spaces.push({ id: space, name: a.name ?? null, folder: a.folder, tabs: [{ id: tab, name: a.tab ?? null }] });
+    s.terminals.push({
+      address: terminal, name: null, agent: prog ? basename(prog) : null, status: "working", state: "live",
+      cwd: a.folder, labels: { "herdr.space": space, "herdr.tab": tab }, parent: null, created_ms: Date.now(), argv,
+    });
+    out({ space, tab, terminal });
+  } else if (sub === "space.close") {
+    s.spaces = s.spaces.filter((x) => x.id !== a.id);
+    out({});
+  } else if (sub === "space.rename") {
+    for (const x of s.spaces) if (x.id === a.id) x.name = a.name;
+    out({});
+  } else out({});
+  save(s);
+} else process.exit(2);

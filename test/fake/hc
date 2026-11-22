@@ -1,0 +1,58 @@
+#!/usr/bin/env bun
+// Fake hc for tests: terminals live in $HWT_FAKE_STATE (shared with the fake herdr-app).
+import { load, save } from "./state.ts";
+
+const args = process.argv.slice(2).filter((a) => a !== "--json");
+const [cmd, ...rest] = args;
+const s = load();
+const out = (v: unknown) => process.stdout.write(JSON.stringify(v) + "\n");
+const find = (t?: string) => s.terminals.find((x) => x.address === t || x.name === t);
+
+switch (cmd) {
+  case "--version":
+    out("hc 0.0.0-fake");
+    break;
+  case "ls": {
+    const i = rest.indexOf("--label");
+    let list = s.terminals;
+    if (i >= 0) {
+      const [k, v] = rest[i + 1]!.split("=");
+      list = list.filter((t) => t.labels?.[k!] === v);
+    }
+    out({ terminals: list });
+    break;
+  }
+  case "get": {
+    const t = find(rest[0]);
+    if (!t) process.exit(1);
+    out(t);
+    break;
+  }
+  case "label": {
+    const t = find(rest[0]);
+    if (!t) process.exit(1);
+    for (const kv of rest.slice(1)) {
+      const [k, v] = kv.split("=");
+      t.labels = { ...t.labels, [k!]: v ?? "" };
+    }
+    save(s);
+    break;
+  }
+  case "send": {
+    if (!find(rest[0])) process.exit(1);
+    s.sent.push({ to: rest[0]!, text: rest.slice(1).join(" ") });
+    save(s);
+    break;
+  }
+  case "kill": {
+    const t = find(rest[0]);
+    if (t) t.state = "exited";
+    save(s);
+    break;
+  }
+  case "wait":
+    out({ reason: "timeout" });
+    break;
+  default:
+    process.exit(2);
+}
