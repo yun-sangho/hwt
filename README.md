@@ -45,7 +45,7 @@ eval "$(hwt shell-init zsh)"      # or bash / fish
 ## Repo setup
 
 ```sh
-hwt init                    # .hwt.json with a setup guessed from your lockfile
+hwt init                    # .hwt.json with a setup guessed from your lockfiles
 hwt init --main-session     # …and the main-session workflow
 ```
 

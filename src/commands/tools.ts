@@ -8,24 +8,37 @@ import * as herdr from "../herdr.ts";
 import { readLedger, stateDir, unackedInbox } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
 import { claimMain, isMainSessionRepo } from "../session.ts";
-import { basename, die, has, printJson, run, runOut } from "../util.ts";
+import { basename, die, has, printJson, run, runOut, warn } from "../util.ts";
 
 const INIT_USAGE = "hwt init [--main-session] [--setup CMD] [--lang en|ko] [--force]";
 
-/** A setup command guessed from the lockfile in the repo root. */
-function guessSetup(dir: string): string | undefined {
-  const pick: [string, string][] = [
-    ["pnpm-lock.yaml", "pnpm install"],
-    ["bun.lock", "bun install"],
-    ["bun.lockb", "bun install"],
-    ["yarn.lock", "yarn install"],
-    ["package-lock.json", "npm ci"],
-    ["uv.lock", "uv sync"],
-    ["poetry.lock", "poetry install"],
-    ["Gemfile.lock", "bundle install"],
-    ["go.sum", "go mod download"],
-  ];
-  return pick.find(([f]) => existsSync(join(dir, f)))?.[1];
+/**
+ * Lockfiles in the repo root, one group per ecosystem, first match wins inside a group. A group counts only
+ * when its manifest is there too: a stray package-lock.json in a Go repo is not a JS project.
+ */
+const SETUP_GROUPS: { manifest?: string; pick: [string, string][] }[] = [
+  {
+    manifest: "package.json",
+    pick: [
+      ["pnpm-lock.yaml", "pnpm install"],
+      ["bun.lock", "bun install"],
+      ["bun.lockb", "bun install"],
+      ["yarn.lock", "yarn install"],
+      ["package-lock.json", "npm ci"],
+    ],
+  },
+  { pick: [["uv.lock", "uv sync"], ["poetry.lock", "poetry install"]] },
+  { pick: [["Gemfile.lock", "bundle install"]] },
+  { pick: [["go.sum", "go mod download"]] },
+];
+
+/** A setup command guessed from the lockfiles in the repo root: every ecosystem's, joined with &&. */
+function guessSetup(dir: string): { setup: string; from: string[] } | undefined {
+  const found = SETUP_GROUPS.filter((g) => !g.manifest || existsSync(join(dir, g.manifest)))
+    .map((g) => g.pick.find(([f]) => existsSync(join(dir, f))))
+    .filter((p): p is [string, string] => !!p);
+  if (!found.length) return undefined;
+  return { setup: found.map(([, c]) => c).join(" && "), from: found.map(([f]) => f) };
 }
 
 export function cmdInit(args: string[]): void {
@@ -36,8 +49,10 @@ export function cmdInit(args: string[]): void {
   const f = join(main, ".hwt.json");
   if (existsSync(f) && !a.flag.force) die(`${f} exists (pass --force to rewrite it)`);
   const cfg: RepoConfig = { version: 1 };
-  const setup = a.opt.setup ?? guessSetup(main);
+  const guess = a.opt.setup === undefined ? guessSetup(main) : undefined;
+  const setup = a.opt.setup ?? guess?.setup;
   if (setup) cfg.setup = setup;
+  if (guess) warn(`setup: ${guess.setup} (from ${guess.from.join(", ")}); change it in .hwt.json if that's wrong`);
   if (a.flag["main-session"]) {
     cfg.mainSession = true;
     cfg.mergeApproval = { paths: [".github/workflows/**", ".hwt.json"], maxLines: 400 };
