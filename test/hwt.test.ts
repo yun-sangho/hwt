@@ -200,6 +200,33 @@ describe("main-session workflow", () => {
     expect(ledger().main.terminal).toBe("t2");
   });
 
+  test("the main is found by label or ledger, never by a terminal that merely started in the repo", () => {
+    config({ mainSession: true });
+    const wt = json(hwt(["new", "feat/r", "--no-space"])).path;
+    const s = fake();
+    // t1 is the main but its terminal started elsewhere; t9 is an unrelated agent that started in the repo.
+    s.terminals.push(
+      { address: "t1", name: null, agent: "claude-code", status: "done", state: "live", cwd: dir, labels: {}, parent: null, created_ms: 1 },
+      { address: "t9", name: null, agent: "codex", status: "done", state: "live", cwd: repo, labels: {}, parent: null, created_ms: 2 },
+    );
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
+    hwt(["claim"], { env: { HC_TERMINAL_ID: "t1" } });
+    const refused = hwt(["inbox"], { cwd: wt });
+    expect(refused.err).toContain("main session now: t1");
+    expect(refused.err).not.toContain("t9");
+    // The label is gone (say Herdr restarted it): the ledger's live main still gets the message.
+    const t = fake();
+    t.terminals.find((x) => x.address === "t1")!.labels = {};
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(t));
+    expect(json(hwt(["tell", "[decision] a"], { cwd: wt }))).toMatchObject({ main: "t1", delivered: true });
+    // The main is gone: the message stays in the inbox instead of going to t9.
+    const u = fake();
+    u.terminals.find((x) => x.address === "t1")!.state = "exited";
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(u));
+    expect(json(hwt(["tell", "[decision] b"], { cwd: wt }))).toMatchObject({ main: null, delivered: false, inbox: true });
+    expect(fake().sent.map((m) => m.to)).toEqual(["t1"]);
+  });
+
   test("merge queue: add from the worktree, approval paths, approve, set", () => {
     config({ mainSession: true, mergeApproval: { paths: ["db/**", "AGENTS.md"] } });
     const wt = json(hwt(["new", "feat/m", "--no-space"])).path;
