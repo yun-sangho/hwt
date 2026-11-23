@@ -3,7 +3,7 @@ import { basename } from "./util.ts";
 import { mainConfig, langFor } from "./config.ts";
 import { samePath, toplevel } from "./git.ts";
 import * as herdr from "./herdr.ts";
-import { updateLedger } from "./ledger.ts";
+import { readLedger, updateLedger } from "./ledger.ts";
 import { sessionFromEnv } from "./agents.ts";
 import { messages } from "./messages.ts";
 import { die, stamp } from "./util.ts";
@@ -30,21 +30,19 @@ export function claimMain(main: string): void {
 }
 
 /**
- * Address of the live main session: the newest live terminal labelled hwt.main=<repo>, else the one live
- * agent terminal sitting in the main checkout. Empty when none (the main session is down).
+ * Address of the live main session: the newest live terminal labelled hwt.main=<repo>, else the terminal the
+ * ledger recorded at the last claim if it is still live. Empty when neither (the main session is down): a
+ * terminal's cwd is where it started, not where its agent works, so it never decides who the main is.
  */
 export function resolveMain(main: string): string {
-  let live = herdr.terminals(mainLabel(main)).filter(herdr.isLive);
-  if (live.length > 1) {
-    const withTime = live.map((t) => ({ t, ms: t.created_ms ?? herdr.terminal(t.address)?.created_ms ?? 0 }));
-    withTime.sort((a, b) => a.ms - b.ms);
-    live = [withTime[withTime.length - 1]!.t];
+  const labelled = herdr.terminals(mainLabel(main)).filter(herdr.isLive);
+  if (labelled.length) {
+    const ms = (t: herdr.Terminal) => t.created_ms ?? herdr.terminal(t.address)?.created_ms ?? 0;
+    return labelled.reduce((a, b) => (ms(b) > ms(a) ? b : a)).address;
   }
-  if (live.length === 0) {
-    const inMain = herdr.terminals().filter((t) => herdr.isLive(t) && herdr.isAgent(t) && t.cwd === main);
-    live = inMain.length === 1 ? inMain : [];
-  }
-  return live[0]?.address ?? "";
+  const recorded = readLedger(main).main?.terminal;
+  const t = recorded ? herdr.terminal(recorded) : null;
+  return t && herdr.isLive(t) ? t.address : "";
 }
 
 /**
@@ -55,10 +53,5 @@ export function mainOnly(main: string, cmd: "new" | "rm" | "inbox" | "ack" | "wa
   if (process.env.HWT_ANYWHERE) return;
   if (!isMainSessionRepo(main)) return;
   if (samePath(toplevel(), main)) return;
-  const sessions = herdr
-    .terminals()
-    .filter((t) => herdr.isLive(t) && herdr.isAgent(t) && t.cwd === main)
-    .map((t) => t.address)
-    .join(" ");
-  die(messages(langFor(main)).mainOnly(main, cmd, sessions));
+  die(messages(langFor(main)).mainOnly(main, cmd, resolveMain(main)));
 }

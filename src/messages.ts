@@ -37,10 +37,10 @@ const en: Messages = {
     `If the main session sends a [rebase request] or similar, fix it and mq add again.`,
   taskProposal: (id, title, touches) =>
     `[task proposal] ${id} ${title}${touches ? ` (touches: ${touches})` : ""} — please decide with hwt task ls`,
-  mainOnly: (main, cmd, sessions) =>
+  mainOnly: (main, cmd, now) =>
     `hwt ${cmd} runs only from the main session in ${main} (this repo's .hwt.json has mainSession).\n` +
     `A working session reports with: hwt tell "[worktree request|task proposal|merge request|decision] ..." ` +
-    `(merge: hwt mq add --pr <n>; wait for the merge with gh pr view <n>)${sessions ? `  (main sessions now: ${sessions})` : ""}`,
+    `(merge: hwt mq add --pr <n>; wait for the merge with gh pr view <n>)${now ? `  (main session now: ${now})` : ""}`,
   sessionStartMain: (repo, claimed) =>
     `[hwt] This session is the main session of ${repo}${claimed ? " (claimed: working sessions' hwt tell comes here)" : ""}. ` +
     `Work the hwt way: the task list is hwt task, record the person's decisions and permissions right away with hwt note, ` +
@@ -70,10 +70,10 @@ const ko: Messages = {
     `메인이 [리베이스 요청] 등을 보내면 고쳐서 다시 mq add 한다.`,
   taskProposal: (id, title, touches) =>
     `[작업 제안] ${id} ${title}${touches ? ` (touches: ${touches})` : ""} — hwt task ls 로 판단해 주세요`,
-  mainOnly: (main, cmd, sessions) =>
+  mainOnly: (main, cmd, now) =>
     `hwt ${cmd} 는 ${main} 의 메인 세션에서만 돈다(.hwt.json 의 mainSession).\n` +
     `작업 세션은 hwt tell "[워크트리 요청|작업 제안|머지 요청|결정 공유] ..." 로 보고한다 ` +
-    `(머지: hwt mq add --pr <n>, 머지 대기는 gh pr view <n>)${sessions ? `  (지금 메인 세션: ${sessions})` : ""}`,
+    `(머지: hwt mq add --pr <n>, 머지 대기는 gh pr view <n>)${now ? `  (지금 메인 세션: ${now})` : ""}`,
   sessionStartMain: (repo, claimed) =>
     `[hwt] 이 세션은 ${repo} 의 메인 세션이다${claimed ? " (hwt claim 완료, 작업 세션의 hwt tell 이 여기로 온다)" : ""}. ` +
     `작업 방식은 hwt 를 따른다: 작업 목록은 hwt task, 사용자 결정·허락은 받는 즉시 hwt note, 구현은 hwt new 로 작업 세션에 맡기고 ` +
