@@ -310,10 +310,23 @@ describe("main-session workflow", () => {
 
 describe("tools", () => {
   test("init guesses setup from the lockfile", () => {
+    writeFileSync(join(repo, "package.json"), "{}");
     writeFileSync(join(repo, "pnpm-lock.yaml"), "");
     const r = json(hwt(["init", "--main-session", "--lang", "ko"]));
     expect(r.config).toMatchObject({ version: 1, setup: "pnpm install", mainSession: true, lang: "ko" });
     expect(hwt(["init"]).code).toBe(1);
+  });
+
+  test("init: a JS lockfile without package.json doesn't count; each ecosystem gets its setup; the guess is shown", () => {
+    writeFileSync(join(repo, "package-lock.json"), '{"packages": {}}');
+    writeFileSync(join(repo, "go.sum"), "");
+    let r = hwt(["init"]);
+    expect(json(r).config.setup).toBe("go mod download");
+    expect(r.err).toContain("setup: go mod download (from go.sum)");
+    writeFileSync(join(repo, "package.json"), "{}");
+    r = hwt(["init", "--force"]);
+    expect(json(r).config.setup).toBe("npm ci && go mod download");
+    expect(hwt(["init", "--force", "--setup", "make"]).err).not.toContain("from");
   });
 
   test("doctor reports required tools and a leftover teardown", () => {
