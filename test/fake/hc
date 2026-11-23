@@ -34,6 +34,7 @@ switch (cmd) {
     for (const kv of rest.slice(1)) {
       const [k, v] = kv.split("=");
       t.labels = { ...t.labels, [k!]: v ?? "" };
+      if (!v) delete t.labels[k!]; // `key=` removes, as in the real hc
     }
     save(s);
     break;

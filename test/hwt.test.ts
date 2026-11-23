@@ -180,6 +180,26 @@ describe("main-session workflow", () => {
     expect(hwt(["inbox", "--all"]).out.trim().split("\n")).toHaveLength(1);
   });
 
+  test("only claim makes a terminal the main; new/rm leave it, a new claim moves it", () => {
+    config({ mainSession: true });
+    const s = fake();
+    for (const address of ["t1", "t2"])
+      s.terminals.push({ address, name: null, agent: "claude-code", status: "done", state: "live", cwd: repo, labels: {}, parent: null, created_ms: address === "t1" ? 1 : 2 });
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
+    const label = (t: string) => fake().terminals.find((x) => x.address === t)!.labels["hwt.main"];
+    hwt(["claim"], { env: { HC_TERMINAL_ID: "t1" } });
+    // Another terminal in the main checkout makes and removes a worktree: the main stays t1.
+    expect(hwt(["new", "feat/c", "--no-space"], { env: { HC_TERMINAL_ID: "t2" } }).code).toBe(0);
+    expect(hwt(["rm", "feat/c", "-D", "--no-hooks"], { env: { HC_TERMINAL_ID: "t2" } }).code).toBe(0);
+    expect(label("t2")).toBeUndefined();
+    expect(hwt(["main"]).out.trim()).toBe("t1");
+    // An explicit claim moves the label: one terminal holds it.
+    hwt(["claim"], { env: { HC_TERMINAL_ID: "t2" } });
+    expect(label("t1")).toBeUndefined();
+    expect(label("t2")).toBe("repo");
+    expect(ledger().main.terminal).toBe("t2");
+  });
+
   test("merge queue: add from the worktree, approval paths, approve, set", () => {
     config({ mainSession: true, mergeApproval: { paths: ["db/**", "AGENTS.md"] } });
     const wt = json(hwt(["new", "feat/m", "--no-space"])).path;
