@@ -5,6 +5,7 @@ import { cmdLs, cmdNew, cmdRm, cmdSend, cmdTitle } from "./commands/worktree.ts"
 import { cmdAck, cmdClaim, cmdInbox, cmdMain, cmdNote, cmdStatus, cmdTell, cmdWait } from "./commands/session.ts";
 import { cmdMq, cmdTask } from "./commands/queue.ts";
 import { cmdDoctor, cmdHook, cmdInit, cmdShellInit } from "./commands/tools.ts";
+import { cmdInstall, cmdUninstall } from "./commands/install.ts";
 import { HwtError } from "./util.ts";
 
 const HELP = `hwt ${pkg.version}: git worktrees as Herdr spaces
@@ -26,6 +27,7 @@ Setup
   hwt init [--main-session] [--setup CMD] [--lang en|ko]
   hwt doctor
   hwt shell-init zsh|bash|fish
+  hwt install|uninstall claude|codex|all [--lang en|ko] [--dry-run]   skill + session-start wiring
   hwt hook session-start
 
 stdout is JSON (status, ls-style lists pretty-printed); progress goes to stderr.
@@ -53,6 +55,8 @@ async function main(argv: string[]): Promise<void> {
     case "doctor": return cmdDoctor();
     case "shell-init": return cmdShellInit(args);
     case "hook": return cmdHook(args);
+    case "install": return cmdInstall(args);
+    case "uninstall": return cmdUninstall(args);
     case "--version":
     case "-V":
       process.stdout.write(`${pkg.version}\n`);

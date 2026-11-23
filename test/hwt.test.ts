@@ -353,3 +353,82 @@ describe("tools", () => {
     expect(hwt(["shell-init", "fish"]).out).toContain("function hwt");
   });
 });
+
+describe("install / uninstall", () => {
+  const claude = () => join(dir, ".claude");
+  const settings = () => JSON.parse(readFileSync(join(claude(), "settings.json"), "utf8"));
+  const sessionStart = () => settings().hooks.SessionStart.flatMap((g: { hooks: { command: string }[] }) => g.hooks.map((h) => h.command));
+
+  test("claude: skill + hook, idempotent, keeps other settings, replaces the old script hook", () => {
+    sh(["mkdir", "-p", claude()]);
+    writeFileSync(
+      join(claude(), "settings.json"),
+      JSON.stringify({
+        model: "opus",
+        hooks: {
+          SessionStart: [{ hooks: [{ type: "command", command: "~/.claude/skills/herdr-worktree/scripts/hwt-session-start", timeout: 20 }] }],
+          Stop: [{ hooks: [{ type: "command", command: "say done" }] }],
+        },
+      }),
+    );
+    const r = json(hwt(["install", "claude", "--lang", "ko"]));
+    expect(r.actions.map((x: { change: string }) => x.change)).toEqual(["create", "update"]);
+    expect(r.actions[1].note).toContain("replaced the old hook");
+    expect(readFileSync(join(claude(), "skills", "hwt", "SKILL.md"), "utf8")).toContain("name: hwt\ndescription: git 워크트리를");
+    expect(sessionStart()).toEqual(["hwt hook session-start"]);
+    expect(settings().model).toBe("opus");
+    expect(settings().hooks.Stop[0].hooks[0].command).toBe("say done");
+    expect(existsSync(join(claude(), "settings.json.hwt-backup"))).toBe(true);
+    const again = json(hwt(["install", "claude", "--lang", "ko"]));
+    expect(again.actions.map((x: { change: string }) => x.change)).toEqual(["unchanged", "unchanged"]);
+    // switching language rewrites only the skill
+    expect(json(hwt(["install", "claude", "--lang", "en"])).actions.map((x: { change: string }) => x.change)).toEqual(["update", "unchanged"]);
+    const doc = json(hwt(["doctor"])).checks.find((c: { name: string }) => c.name === "claude integration");
+    expect(doc.ok).toBe(true);
+    const u = json(hwt(["uninstall", "claude"]));
+    expect(u.actions.map((x: { change: string }) => x.change)).toEqual(["remove", "remove"]);
+    expect(existsSync(join(claude(), "skills", "hwt"))).toBe(false);
+    expect(settings().hooks.SessionStart).toBeUndefined();
+    expect(settings().hooks.Stop).toHaveLength(1);
+  });
+
+  test("claude: --dry-run changes nothing; a broken settings.json is left alone", () => {
+    const r = json(hwt(["install", "claude", "--dry-run"]));
+    expect(r.actions.map((x: { change: string }) => x.change)).toEqual(["create", "create"]);
+    expect(existsSync(claude())).toBe(false);
+    sh(["mkdir", "-p", claude()]);
+    writeFileSync(join(claude(), "settings.json"), "{ not json");
+    const bad = hwt(["install", "claude"]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("won't overwrite");
+    expect(readFileSync(join(claude(), "settings.json"), "utf8")).toBe("{ not json");
+  });
+
+  test("codex: skill + marked AGENTS.md block, kept apart from the person's own text", () => {
+    const codex = join(dir, ".codex");
+    sh(["mkdir", "-p", codex]);
+    writeFileSync(join(codex, "AGENTS.md"), "# My rules\n\n- be brief\n");
+    const r = json(hwt(["install", "codex", "--lang", "ko"]));
+    expect(r.actions.map((x: { change: string }) => x.change)).toEqual(["create", "update"]);
+    let md = readFileSync(join(codex, "AGENTS.md"), "utf8");
+    expect(md).toStartWith("# My rules\n\n- be brief\n\n<!-- hwt:begin");
+    expect(md).toContain("hwt hook session-start");
+    expect(json(hwt(["install", "codex", "--lang", "ko"])).actions.map((x: { change: string }) => x.change)).toEqual(["unchanged", "unchanged"]);
+    hwt(["install", "codex", "--lang", "en"]);
+    md = readFileSync(join(codex, "AGENTS.md"), "utf8");
+    expect(md.match(/hwt:begin/g)).toHaveLength(1);
+    expect(md).toContain("Make and remove worktrees only with");
+    hwt(["uninstall", "codex"]);
+    expect(readFileSync(join(codex, "AGENTS.md"), "utf8")).toBe("# My rules\n\n- be brief\n");
+    expect(existsSync(join(codex, "skills", "hwt"))).toBe(false);
+  });
+
+  test("uninstall leaves a skill that isn't hwt's", () => {
+    const d = join(dir, ".claude", "skills", "hwt");
+    sh(["mkdir", "-p", d]);
+    writeFileSync(join(d, "SKILL.md"), "---\nname: something-else\n---\n");
+    const u = json(hwt(["uninstall", "claude"]));
+    expect(u.actions[0]).toMatchObject({ change: "unchanged" });
+    expect(existsSync(join(d, "SKILL.md"))).toBe(true);
+  });
+});

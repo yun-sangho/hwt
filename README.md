@@ -120,10 +120,21 @@ handles session ids, so a lost session can be reopened with `hwt new <branch> --
 
 ## Agent integration
 
-- Claude Code: copy `skills/hwt/SKILL.md` to `~/.claude/skills/hwt/` and add a SessionStart hook running
-  `hwt hook session-start`. In a main-session repo it tells each new session whether it is the main or a
-  working session and what the ledger holds.
-- Other agents: point them at the same SKILL.md from their instructions file.
+```sh
+hwt install claude --lang ko     # or en; claude | codex | all
+hwt install all --dry-run        # show what would change
+hwt uninstall claude
+```
+
+- **Claude Code**: writes the skill to `~/.claude/skills/hwt/SKILL.md` and adds a SessionStart hook running
+  `hwt hook session-start` to `~/.claude/settings.json` (other settings are kept; the old file is saved as
+  `settings.json.hwt-backup`). In a main-session repo the hook tells each new session whether it is the main
+  or a working session and what the ledger holds.
+- **Codex**: writes the skill to `~/.codex/skills/hwt/SKILL.md` and a marked block to `~/.codex/AGENTS.md`.
+  Codex has no session-start hook, so the block tells it to run `hwt hook session-start` itself. Your own
+  text in AGENTS.md is left alone; only the block between the `hwt:begin` / `hwt:end` markers is managed.
+- Running it again is safe; it changes only what differs. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured.
+  `hwt doctor` reports whether both are installed.
 
 ## Development
 

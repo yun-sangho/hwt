@@ -9,6 +9,7 @@ import { readLedger, stateDir, unackedInbox } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
 import { claimMain, isMainSessionRepo } from "../session.ts";
 import { basename, die, has, printJson, run, runOut, warn } from "../util.ts";
+import { claudeDir, claudeHookInstalled, codexBlockInstalled, codexDir, ourSkill } from "./install.ts";
 
 const INIT_USAGE = "hwt init [--main-session] [--setup CMD] [--lang en|ko] [--force]";
 
@@ -98,6 +99,17 @@ export function cmdDoctor(): void {
     add(agent, has(agent), false, has(agent) ? (version([agent, "--version"]) ?? "found") : "not found");
   }
   add("worktrees root", true, false, worktreesRoot());
+  {
+    const skill = join(claudeDir(), "skills", "hwt", "SKILL.md");
+    const ok = ourSkill(skill) && claudeHookInstalled();
+    add("claude integration", ok, false, ok
+      ? `skill and SessionStart hook in ${claudeDir()}`
+      : `${ourSkill(skill) ? "" : "no hwt skill; "}${claudeHookInstalled() ? "" : "no SessionStart hook; "}run: hwt install claude`);
+  }
+  if (has("codex") || existsSync(codexDir())) {
+    const ok = ourSkill(join(codexDir(), "skills", "hwt", "SKILL.md")) && codexBlockInstalled();
+    add("codex integration", ok, false, ok ? `skill and AGENTS.md block in ${codexDir()}` : "run: hwt install codex");
+  }
   add("user config", true, false, existsSync(userConfigPath()) ? userConfigPath() : `${userConfigPath()} (none, defaults)`);
 
   const top = toplevel();
