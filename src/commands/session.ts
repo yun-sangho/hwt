@@ -4,6 +4,7 @@ import { currentBranch, repoMain, samePath, toplevel, worktreeList } from "../gi
 import * as herdr from "../herdr.ts";
 import { ack, appendInbox, readInbox, readLedger, unackedInbox, updateLedger } from "../ledger.ts";
 import { claimMain, mainLabel, mainOnly, resolveMain } from "../session.ts";
+import { parse } from "../args.ts";
 import { basename, die, has, inboxId, printJson, run, sleepMs, stamp } from "../util.ts";
 
 export function cmdClaim(): void {
@@ -72,16 +73,26 @@ export function cmdAck(args: string[]): void {
   else die("usage: hwt ack <id>...|--all");
 }
 
+const NOTE_USAGE = "hwt note [--branch B] <text> | note --drop <n>  (n: 1 = oldest note in hwt status)";
+
 /** hwt note [--branch B] TEXT: a user decision or standing permission the main session must not lose. */
 export function cmdNote(args: string[]): void {
-  let branch: string | null = null;
-  if (args[0] === "--branch") {
-    branch = args[1] ?? die("usage: hwt note [--branch B] <text>");
-    args = args.slice(2);
+  const a = parse(args, { opts: ["branch", "drop"] }, NOTE_USAGE);
+  if (a.opt.drop !== undefined) {
+    const main = repoMain();
+    const n = Number(a.opt.drop);
+    const notes = readLedger(main).notes;
+    const want = notes[n - 1];
+    if (!Number.isInteger(n) || !want) die(`no note ${a.opt.drop} (there are ${notes.length})`);
+    // Drop by identity, not position, in case another note landed in between.
+    updateLedger(main, (l) => {
+      l.notes = l.notes.filter((x) => !(x.at === want.at && x.text === want.text));
+    });
+    return printJson({ dropped: want });
   }
-  if (!args.length) die("usage: hwt note [--branch B] <text>");
+  if (!a.pos.length) die(`usage: ${NOTE_USAGE}`);
   updateLedger(repoMain(), (l) => {
-    l.notes.push({ at: stamp(), branch, text: args.join(" ") });
+    l.notes.push({ at: stamp(), branch: a.opt.branch ?? null, text: a.pos.join(" ") });
   });
 }
 

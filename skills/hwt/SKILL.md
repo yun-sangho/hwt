@@ -26,6 +26,7 @@ description: Use when creating or removing git worktrees, or when working the ma
 hwt claim                     # at session start (the session-start hook does it): this terminal is the main
 hwt status [--prs]            # one-page restore: notes, tasks, merges, unread messages, worktrees, PRs
 hwt note [--branch B] "…"     # record the person's decisions and permissions the moment you get them
+hwt note --drop <n>           # remove a wrong note (n: 1 = oldest in hwt status)
 hwt inbox [--all] / ack <id>  # working sessions' messages; ack what you handled
 hwt wait [--timeout S]        # when waiting (not hc wait --children: it ends early on old messages)
 hwt send <worktree> "…"       # to a working session, whatever its terminal id is now

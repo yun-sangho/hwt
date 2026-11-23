@@ -254,6 +254,23 @@ describe("main-session workflow", () => {
     }
   });
 
+  test("note: --help and stray options write nothing; --drop removes a wrong note", () => {
+    config({ mainSession: true });
+    for (const cmd of [["note", "--help"], ["note", "-h"], ["task", "--help"], ["mq", "-h"]]) {
+      const r = hwt(cmd);
+      expect(r.code).toBe(0);
+      expect(r.out).toStartWith("usage: hwt");
+    }
+    expect(hwt(["note", "--bogus", "x"]).code).toBe(1);
+    expect(existsSync(join(repo, ".git", "hwt", "ledger.json")) ? ledger().notes : []).toEqual([]);
+    hwt(["note", "keep"]);
+    hwt(["note", "typo"]);
+    hwt(["note", "also keep"]);
+    expect(hwt(["note", "--drop", "9"]).code).toBe(1);
+    expect(json(hwt(["note", "--drop", "2"]))).toMatchObject({ dropped: { text: "typo" } });
+    expect(ledger().notes.map((n: { text: string }) => n.text)).toEqual(["keep", "also keep"]);
+  });
+
   test("note and status", () => {
     config({ mainSession: true });
     hwt(["new", "feat/s", "--no-space", "--title", "S"]);

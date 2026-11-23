@@ -18,6 +18,9 @@ const TASK_USAGE = "hwt task add|ls|decide|done|drop";
 export function cmdTask(args: string[]): void {
   const [sub = "ls", ...rest] = args;
   switch (sub) {
+    case "--help":
+    case "-h":
+      return void process.stdout.write(`usage: ${TASK_USAGE}\n`);
     case "add": {
       const a = parse(rest, { opts: ["touches", "detail"] }, "hwt task add <title> [--touches p1,p2] [--detail TEXT]");
       const main = repoMain();
@@ -173,9 +176,14 @@ export function mqChecks(main: string, branch: string, pr: number | null, wt: st
 
 const MQ_STATES: MergeState[] = ["merging", "verifying", "done", "returned", "failed", "waiting_user"];
 
+const MQ_USAGE = "hwt mq add|ls|next|set|approve";
+
 export function cmdMq(args: string[]): void {
   const [sub = "ls", ...rest] = args;
   switch (sub) {
+    case "--help":
+    case "-h":
+      return void process.stdout.write(`usage: ${MQ_USAGE}\n`);
     case "add": {
       const a = parse(rest, { opts: ["pr"] }, "hwt mq add [--pr N] [TEXT]");
       const main = repoMain();
@@ -248,6 +256,6 @@ export function cmdMq(args: string[]): void {
       return;
     }
     default:
-      die("usage: hwt mq add|ls|next|set|approve");
+      die(`usage: ${MQ_USAGE}`);
   }
 }
