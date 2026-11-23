@@ -98,7 +98,7 @@ Main-session workflow
 
 ```
 hwt claim | main | status [--prs] | wait [--timeout S]
-hwt tell TEXT | inbox [--all] | ack <id>...|--all | note [--branch B] TEXT
+hwt tell TEXT | inbox [--all] | ack <id>...|--all | note [--branch B] TEXT|--drop N
 hwt task add TITLE [--touches p1,p2] | ls [--all] | decide <id> now|later|after:<branch> --why T | done|drop <id>
 hwt mq add [--pr N] [TEXT] | ls [--all] | next | set <id> <state> [--why T] | approve <id>
 ```
