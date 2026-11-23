@@ -36,12 +36,6 @@ bun install && bun run build      # → dist/hwt
 cp dist/hwt ~/.local/bin/
 ```
 
-Optional shell wrapper, so `hwt rm` run from inside the removed checkout drops you in the main one:
-
-```sh
-eval "$(hwt shell-init zsh)"      # or bash / fish
-```
-
 ## Repo setup
 
 ```sh
@@ -103,7 +97,11 @@ hwt task add TITLE [--touches p1,p2] | ls [--all] | decide <id> now|later|after:
 hwt mq add [--pr N] [TEXT] | ls [--all] | next | set <id> <state> [--why T] | approve <id>
 ```
 
-Setup: `hwt init`, `hwt doctor`, `hwt shell-init`, `hwt hook session-start`.
+Setup: `hwt init`, `hwt doctor`, `hwt install` / `uninstall`, `hwt hook session-start`.
+
+Optional, only without the main-session workflow (there `hwt rm` runs in the main checkout): run in
+the checkout it removes, `hwt rm` leaves your shell in a deleted folder. `eval "$(hwt shell-init zsh)"`
+(or bash / fish) in your shell's rc file adds a wrapper that moves you to the main checkout instead.
 
 stdout is JSON; progress goes to stderr.
 
