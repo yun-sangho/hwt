@@ -14,11 +14,16 @@ export function isMainSessionRepo(main: string): boolean {
   return mainConfig(main).mainSession === true;
 }
 
-/** Mark this terminal as the repo's main session: label hwt.main=<repo> and record it in the ledger. */
+/**
+ * Mark this terminal as the repo's main session: label hwt.main=<repo> and record it in the ledger.
+ * The label moves: whichever terminal held it before loses it, so one terminal is the main.
+ */
 export function claimMain(main: string): void {
   const me = herdr.myTerminal();
   if (!me) return;
-  herdr.label(me, mainLabel(main));
+  const label = mainLabel(main);
+  for (const t of herdr.terminals(label)) if (t.address !== me) herdr.label(t.address, "hwt.main=");
+  herdr.label(me, label);
   updateLedger(main, (l) => {
     l.main = { terminal: me, session: sessionFromEnv() || null, claimed: stamp() };
   });

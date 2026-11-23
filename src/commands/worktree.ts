@@ -8,7 +8,7 @@ import { currentBranch, git, gitOut, isDirty, realpath, repoMain, samePath, topl
 import * as herdr from "../herdr.ts";
 import { readLedger, updateLedger } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
-import { claimMain, isMainSessionRepo, mainOnly } from "../session.ts";
+import { isMainSessionRepo, mainOnly } from "../session.ts";
 import { basename, die, printJson, run, shQuote, shellWords, slug, stamp, warn } from "../util.ts";
 
 const NEW_USAGE = "hwt new <branch> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T] [--task-id ID] [--resume-from ID [--fork]] [--no-space] [--no-hooks]";
@@ -46,7 +46,6 @@ export function cmdNew(args: string[]): void {
   const main = repoMain();
   mainOnly(main, "new");
   if (!nospace && !herdr.herdrUp()) die("Herdr is not running (open it, or pass --no-space for the worktree only)");
-  claimMain(main);
 
   // A short title of the work, shown next to the worktree name everywhere: --title, else the task's
   // title (--task-id), else the first line of --task.
@@ -152,7 +151,6 @@ export function cmdRm(args: string[]): void {
   const target = a.pos[0];
   const main = repoMain();
   mainOnly(main, "rm");
-  claimMain(main);
   let wt: string;
   let branch: string;
   if (!target) {
