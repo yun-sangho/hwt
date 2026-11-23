@@ -141,3 +141,8 @@ bun test           # end-to-end tests with fake herdr-app / hc on PATH
 bun run typecheck
 bun run build      # or: bun scripts/build.ts --all
 ```
+
+Releasing: bump `version` in package.json and push to main. `auto-tag` tags `v<version>`, and `release`
+builds the binaries, publishes the GitHub release and bumps `Formula/hwt.rb` in the tap (with the
+`TAP_TOKEN` secret; without it the job warns and the tap is updated by hand with
+`bun scripts/brew-formula.ts <version>`).

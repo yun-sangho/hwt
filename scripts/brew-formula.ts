@@ -1,20 +1,27 @@
-// Print the Homebrew formula for a published release: bun scripts/brew-formula.ts 0.1.0 > Formula/hwt.rb
-// It downloads the release's binaries (gh release download) to compute their sha256.
+// Print the Homebrew formula for a release: bun scripts/brew-formula.ts <version> [--from <dir>] > Formula/hwt.rb
+// sha256s come from the binaries in <dir> (the release job's dist/, just built), else from the published
+// release (gh release download).
 import { $ } from "bun";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const version = process.argv[2]?.replace(/^v/, "");
-if (!version) {
-  console.error("usage: bun scripts/brew-formula.ts <version>");
+const args = process.argv.slice(2);
+const fromAt = args.indexOf("--from");
+const from = fromAt >= 0 ? args[fromAt + 1] : undefined;
+const version = args.find((a, i) => !a.startsWith("--") && i !== fromAt + 1)?.replace(/^v/, "");
+if (!version || (fromAt >= 0 && !from)) {
+  console.error("usage: bun scripts/brew-formula.ts <version> [--from <dir>]");
   process.exit(2);
 }
 const repo = "yun-sangho/hwt";
-const dir = mkdtempSync(join(tmpdir(), "hwt-formula-"));
-await $`gh release download v${version} -R ${repo} -p ${"hwt-*"} -D ${dir}`.quiet();
+let dir = from;
+if (!dir) {
+  dir = mkdtempSync(join(tmpdir(), "hwt-formula-"));
+  await $`gh release download v${version} -R ${repo} -p ${"hwt-*"} -D ${dir}`.quiet();
+}
 
-const sha = (name: string) => new Bun.CryptoHasher("sha256").update(readFileSync(join(dir, name))).digest("hex");
+const sha = (name: string) => new Bun.CryptoHasher("sha256").update(readFileSync(join(dir!, name))).digest("hex");
 const url = (name: string) => `https://github.com/${repo}/releases/download/v${version}/${name}`;
 const asset = (os: string, arch: string) => {
   const name = `hwt-${os}-${arch}`;

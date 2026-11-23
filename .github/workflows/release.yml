@@ -1,18 +1,86 @@
 name: release
+
+# A v* tag (pushed by hand, or created by auto-tag.yml after a version bump) builds the binaries,
+# publishes the GitHub release and bumps Formula/hwt.rb in yun-sangho/homebrew-tap.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.2.1)"
+        required: true
+
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun test
+
+      - name: Check the tag matches package.json
+        run: |
+          V=$(jq -r .version package.json)
+          [ "v$V" = "$TAG" ] || { echo "::error::tag $TAG but package.json says $V"; exit 1; }
+
       - run: bun scripts/build.ts --all
-      - run: gh release create "$GITHUB_REF_NAME" dist/hwt-* --generate-notes
+
+      # An existing release is never overwritten (its sha256s are already in people's formulae): the
+      # formula is then made from the binaries it has.
+      - name: Publish the release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; keeping its binaries."
+            gh release download "$TAG" -p 'hwt-*' -D published
+            echo "BINARIES=published" >> "$GITHUB_ENV"
+          else
+            gh release create "$TAG" dist/hwt-* --generate-notes
+            echo "BINARIES=dist" >> "$GITHUB_ENV"
+          fi
+
+      # Needs the TAP_TOKEN secret (a token that can push to yun-sangho/homebrew-tap), as in ade-dedrm.
+      - name: Check for TAP_TOKEN
+        id: tap
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -n "$TAP_TOKEN" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::warning::TAP_TOKEN is not set; update the tap by hand: bun scripts/brew-formula.ts ${TAG#v}"; fi
+
+      - name: Checkout tap repo
+        if: steps.tap.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: yun-sangho/homebrew-tap
+          token: ${{ secrets.TAP_TOKEN }}
+          path: tap
+
+      - name: Bump Formula/hwt.rb
+        if: steps.tap.outputs.ok == 'true'
+        run: |
+          bun scripts/brew-formula.ts "${TAG#v}" --from "$BINARIES" > tap/Formula/hwt.rb
+          cd tap
+          git diff --stat
+          if git diff --quiet Formula/hwt.rb; then
+            echo "Formula already at $TAG — nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/hwt.rb
+          git commit -m "hwt ${TAG#v}"
+          git push
