@@ -72,7 +72,11 @@ jobs:
       - name: Bump Formula/hwt.rb
         if: steps.tap.outputs.ok == 'true'
         run: |
-          bun scripts/brew-formula.ts "${TAG#v}" --from "$BINARIES" > tap/Formula/hwt.rb
+          # The formula's text (desc, caveats) follows main, not the tag: re-running an old tag
+          # must not bring back an old template.
+          git fetch -q origin main --depth=1
+          git show FETCH_HEAD:scripts/brew-formula.ts > brew-formula.ts
+          bun brew-formula.ts "${TAG#v}" --from "$BINARIES" > tap/Formula/hwt.rb
           cd tap
           git diff --stat
           if git diff --quiet Formula/hwt.rb; then
