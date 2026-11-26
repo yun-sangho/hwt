@@ -169,7 +169,8 @@ export function cmdMq(args: string[]): void {
         for (const m of old) move(m, "dropped", b, `replaced by ${id}`, true);
         l.merges = [...merges, item];
       });
-      tell(`${messages(langFor(main)).tags.mergeRequest} ${id} ${b}${pr ? ` PR #${pr}` : ""}${text ? ` — ${text}` : ""}`);
+      // A log entry only: the runner takes it from the queue; the main is woken only if it needs a decision.
+      tell(`${messages(langFor(main)).tags.mergeRequest} ${id} ${b}${pr ? ` PR #${pr}` : ""}${text ? ` — ${text}` : ""}`, { wake: false });
       return printJson({ merge: id, branch: b, state: "queued", place_kept: kept !== undefined });
     }
     case "ls": {

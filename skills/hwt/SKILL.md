@@ -24,6 +24,7 @@ description: Use when creating or removing git worktrees, or when working the ma
 - **A main's identity** is its agent session id (survives resume), else its hc terminal. A new session in a main's terminal takes over that main's worktrees, tasks and notes. A main that is gone for good: another main takes its worktrees with `hwt adopt <worktree>`.
 - **What is yours**: worktrees you made or adopted, their tasks, notes, inbox and merge requests. Records with no owner belong to every main. Don't send to, merge, or remove another main's worktrees; ask the person, or `adopt` with their OK.
 - **State lives in the ledger, not in the conversation**: `<main checkout>/.git/hwt/` (`ledger.json`, `inbox.jsonl`, `acked`). Every checkout and every main sees it; it is never committed.
+- **A main is woken only for a decision.** What reaches its terminal (a turn in its conversation): `[merge approval]`, `[task proposal]`, `[unblocked]`, and a working session's `hwt tell` (`[decision]`, `[worktree request]`). Everything else is a log entry in the ledger, read on demand (`hwt inbox --log`, `status.log_recent`): merge requests, returns, rebase requests, deploy failures, `[now a main]`. The PR, its review, CI fixes, rebases and re-queuing all stay in the working session.
 - **The task list is `hwt task`.** Don't keep a task-list file in the repo. "What's left?" → `hwt task ls --all`, `hwt status` (yours; `task ls --every-main` for all mains').
 
 ### Main session
@@ -36,7 +37,8 @@ hwt mains [ls]                # every main: live, owns
 hwt mains prune [--release] [--dry-run]   # forget gone mains; ones still owning worktrees stay unless --release (their work becomes unowned)
 hwt note [--branch B] "…"     # record the person's decisions and permissions the moment you get them
 hwt note --drop <n>           # remove a wrong note (n: 1 = oldest in hwt status)
-hwt inbox [--all] / ack <id>  # your working sessions' messages; ack what you handled
+hwt inbox [--all] / ack <id>  # messages that need your decision; ack what you handled
+hwt inbox --log               # the log: what happened that needs no decision (merge requests, returns, deploy failures)
 hwt wait [--timeout S]        # when waiting (not hc wait --children: it ends early on old messages)
 hwt send <worktree> "…"       # to one of your working sessions, whatever its terminal id is now
 ```
@@ -72,7 +74,8 @@ hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --f
 - Per item the runner plans one step: **merge** (CI passed, approval auto or approved) → `gh pr merge --squash` (`mergeQueue.method`) → deploy check (`mergeQueue.verify`) → cleanup: `hwt rm -D --kill-agents`, remote branch deleted, the repo's gc (`mergeQueue.gc`), main checkout fast-forwarded, the task `done`. **update** (behind base, no conflict) → `gh pr update-branch`, wait for CI again (up to `maxUpdates`, then return). **wait** (CI running) / **blocked** (`after`). **ask** (mergeApproval path or lines, a `note` on the branch, branch protection) → `waiting_user` + `[merge approval]` in the owning main's inbox. **return** (conflict, CI failed, dirty, unpushed, no PR) → `returned` + `[rebase request]`/`[merge returned]` to the working session and its main
 - Deploy check failed → `failed`, worktree kept, log sent to the working session; fix in the same worktree and `mq add` again
 - A worktree whose session is a main of its own isn't removed on cleanup
-- You run it, and act on what comes back: approvals go to the person, `[unblocked]` tasks get started. Check the PR, CI and commits yourself before trusting a working session's report
+- The working session gets returns, rebase requests, `[base updated]` and deploy logs in full and fixes them itself; its main only gets one line in its log
+- You run it, and act on what wakes you: approvals go to the person, `[unblocked]` tasks get started. Check the PR, CI and commits yourself before trusting a working session's report
 
 **Restarted main**: resumed (same session id) or in the same terminal → your records are still yours. `hwt claim` → `hwt status --prs` → take the notes as given, check your items stuck in `merging`/`verifying`, handle and ack unread messages; one of your ledger-`active` sessions with no terminal → `hwt new <branch> --resume-from <session>` (`--fork` if the original terminal is still alive). A fresh session elsewhere → find the gone main in `status.mains` (`live: false`) and `hwt adopt` its worktrees the person wants continued.
 
@@ -84,7 +87,8 @@ hwt claim                     # only when the person wants this session to becom
 hwt task add "<title>" --touches …   # propose separate follow-up work instead of doing it
 hwt mq add --pr <n> "summary" # after pushing and opening the PR; stay up until merged, handle returned/failed/[base updated] (git pull)
 ```
-- Send the main only what it decides: `[worktree request]`, `[task proposal]`, `[merge request]`, `[decision]` (an answer from the person that other work depends on), anything affecting other work. Short; long text goes in a file or the PR body
+- Don't report progress, status or completion: every `tell` is a turn in the main's conversation. Send only what it decides: `[worktree request]`, `[task proposal]`, `[decision]` (an answer from the person that other work depends on), anything affecting other work. Short; long text goes in a file or the PR body
+- The PR, its review, CI and the merge are yours: `mq add` is the whole report. When a `[rebase request]`, `[merge returned]` or `[deploy failed]` comes back, fix it here and `mq add` again without telling the main
 - Questions that only matter inside this task: ask the person directly on your screen
 - `hwt new` / `hwt rm` are refused in a working worktree until it claims (expected). People can override with `HWT_ANYWHERE=1`
 

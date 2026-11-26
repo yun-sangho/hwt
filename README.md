@@ -21,6 +21,10 @@ owning the worktrees it made: by default every agent in the main checkout is one
 become a main of its own with `hwt claim` in its worktree. State lives in a ledger under `.git/hwt/`, so a
 restarted session picks up where the last one stopped.
 
+Mains are woken only for decisions (merge approvals, task proposals, unblocked tasks, a working session's
+`hwt tell`); merge requests, returns and deploy failures are log entries (`hwt inbox --log`). The PR, its
+review and fixes stay in the working session.
+
 ## Requirements
 
 - git 2.38+
@@ -107,7 +111,7 @@ Main-session workflow
 ```
 hwt claim | adopt <worktree>... | main | status [--prs] | wait [--timeout S]
 hwt mains [ls] | mains prune [--release] [--dry-run]
-hwt tell TEXT | inbox [--all] | ack <id>...|--all | note [--branch B] TEXT|--drop N
+hwt tell TEXT | inbox [--all] [--log] | ack <id>...|--all | note [--branch B] TEXT|--drop N
 hwt task add TITLE [--touches p1,p2] | ls [--all] [--every-main] | decide <id> now|later|after:<branch> --why T | done|drop <id>
 hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT] | ls [--all] | next | log <id>
 hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]

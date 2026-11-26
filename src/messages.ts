@@ -50,12 +50,14 @@ const en: Messages = {
   baseUpdated: "the merge queue merged the base into your PR branch; git pull before you commit more. CI runs again, nothing else to do",
   requeue: "Fix it, push, then hwt mq add --pr <n> again (you keep your place in line)",
   workerInstructions: (self) =>
-    `[hwt] Send the main session only what it has to decide, with \`${self} tell "..."\` (never hc send): ` +
-    `[worktree request], [task proposal] (\`${self} task add\`), [merge request] (\`${self} mq add --pr <n>\`), ` +
-    `and anything that affects other work. Questions that only matter inside this task go straight to the person ` +
+    `[hwt] Don't report progress, status or completion to the main session: every tell is a turn in its conversation. ` +
+    `Tell it only what it has to decide, with \`${self} tell "..."\` (never hc send): ` +
+    `[worktree request], [task proposal] (\`${self} task add\`), and anything that affects other work. ` +
+    `To merge, push, open the PR and run \`${self} mq add --pr <n>\`: that is the whole report (the merge queue takes it from there). Questions that only matter inside this task go straight to the person ` +
     `on this screen, not through the main session. If their answer is a decision other work depends on, tell the main session with [decision]. ` +
     `After mq add, wait for the merge with \`gh pr view <n> --json state\` (don't use ${self} wait, ack or inbox: they are the main session's). ` +
-    `If the main session sends a [rebase request] or similar, fix it and mq add again. ` +
+    `If a [rebase request], [merge returned] or [deploy failed] comes back, fix it here and mq add again, without telling the main; ` +
+    `on [base updated], git pull before committing more. ` +
     `If the person wants this session to become a main session of its own (to split its work further), run \`${self} claim\` here.`,
   taskProposal: (id, title, touches) =>
     `[task proposal] ${id} ${title}${touches ? ` (touches: ${touches})` : ""} — please decide with hwt task ls`,
@@ -78,9 +80,9 @@ const en: Messages = {
     `Below is the ledger (hwt status) in short.`,
   sessionStartWorker: (repo, wt, branch, self) =>
     `[hwt] This session is a working session of ${repo} (worktree ${wt}, branch ${branch}). Change only this worktree; ` +
-    `don't create or remove worktrees and don't merge. Reach the main session only with ${self} tell "[…] …" (never hc send): ` +
-    `[worktree request], [task proposal] (${self} task add), [merge request] (after the PR's CI passes: ${self} mq add --pr <n>, ` +
-    `then stay up until it is merged), [decision]. Questions that only matter inside this task go straight to the person. ` +
+    `don't create or remove worktrees and don't merge. Don't report progress or completion to the main session. Reach it only for ` +
+    `what it decides, with ${self} tell "[…] …" (never hc send): [worktree request], [task proposal] (${self} task add), [decision]. ` +
+    `To merge: push, open the PR, ${self} mq add --pr <n> (that is the report), then stay up until it is merged and fix what comes back. Questions that only matter inside this task go straight to the person. ` +
     `If the person wants this session to become a main session of its own, run ${self} claim here.`,
 };
 
@@ -102,11 +104,12 @@ const ko: Messages = {
   baseUpdated: "머지 큐가 베이스 브랜치를 PR 브랜치에 반영했다. 더 커밋하기 전에 git pull 한다. CI 는 다시 돌고, 따로 할 일은 없다",
   requeue: "고쳐서 push 한 뒤 hwt mq add --pr <n> 을 다시 한다(줄 순서는 유지된다)",
   workerInstructions: (self) =>
-    `[hwt] 메인 세션에는 메인이 판단할 것만 \`${self} tell "..."\` 로 보낸다(hc send 금지): [워크트리 요청]·[작업 제안](\`${self} task add\`)·` +
-    `[머지 요청](\`${self} mq add --pr <n>\`)·다른 작업에 영향을 주는 일. 이 작업 안에서만 필요한 질문은 메인을 거치지 않고 이 화면에서 ` +
+    `[hwt] 메인 세션에 진행 상황·완료를 보고하지 않는다(tell 하나하나가 메인 대화의 한 턴이 된다). ` +
+    `메인이 판단할 것만 \`${self} tell "..."\` 로 보낸다(hc send 금지): [워크트리 요청]·[작업 제안](\`${self} task add\`)·다른 작업에 영향을 주는 일. ` +
+    `머지는 push 하고 PR 을 연 뒤 \`${self} mq add --pr <n>\` 만 하면 된다(그게 보고 전부이고, 이후는 머지 큐가 맡는다). 이 작업 안에서만 필요한 질문은 메인을 거치지 않고 이 화면에서 ` +
     `사용자에게 직접 묻는다. 그 답이 다른 작업에도 걸리는 결정이면 [결정 공유] 로 메인에 알린다. ` +
     `mq add 뒤에는 \`gh pr view <n> --json state\` 로 머지를 기다린다(메인 전용인 ${self} wait·ack·inbox 는 쓰지 않는다). ` +
-    `메인이 [리베이스 요청] 등을 보내면 고쳐서 다시 mq add 한다. ` +
+    `[리베이스 요청]·[머지 반려]·[배포 확인 실패] 가 오면 메인에 알리지 말고 여기서 고쳐 다시 mq add 한다. [베이스 반영] 이 오면 더 커밋하기 전에 git pull 한다. ` +
     `사용자가 이 세션을 독립된 메인 세션으로 만들자고 하면(작업을 더 나눠 맡기려고) 여기서 \`${self} claim\` 한다.`,
   taskProposal: (id, title, touches) =>
     `[작업 제안] ${id} ${title}${touches ? ` (touches: ${touches})` : ""} — hwt task ls 로 판단해 주세요`,
@@ -127,8 +130,8 @@ const ko: Messages = {
     `머지는 hwt mq 로 하나씩, hwt rm 뒤에는 레포의 gc. 아래는 장부(hwt status) 요약이다.`,
   sessionStartWorker: (repo, wt, branch, self) =>
     `[hwt] 이 세션은 ${repo} 의 작업 세션이다(워크트리 ${wt}, 브랜치 ${branch}). 자기 워크트리만 고치고, 워크트리를 만들거나 지우거나 ` +
-    `머지하지 않는다. 메인에는 ${self} tell "[…] …" 로만 보낸다(hc send 금지): [워크트리 요청]·[작업 제안](${self} task add)·` +
-    `[머지 요청](PR·CI 통과 뒤 ${self} mq add --pr <n>, 머지될 때까지 대기)·[결정 공유]. 이 작업 안에서만 필요한 질문은 사용자에게 직접 묻는다. ` +
+    `머지하지 않는다. 메인에 진행 상황·완료를 보고하지 않고, 메인이 판단할 것만 ${self} tell "[…] …" 로 보낸다(hc send 금지): ` +
+    `[워크트리 요청]·[작업 제안](${self} task add)·[결정 공유]. 머지는 push·PR 뒤 ${self} mq add --pr <n> 이 보고 전부이고, 머지될 때까지 남아 돌아온 것을 고친다. 이 작업 안에서만 필요한 질문은 사용자에게 직접 묻는다. ` +
     `사용자가 이 세션을 독립된 메인 세션으로 만들자고 하면 여기서 ${self} claim 한다.`,
 };
 

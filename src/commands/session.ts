@@ -3,7 +3,7 @@ import { codexAdapter, sessionFromEnv } from "../agents.ts";
 import { samePath, worktreeList } from "../git.ts";
 import { childKey, findChild, isGit, projectRoot, workDir } from "../project.ts";
 import * as herdr from "../herdr.ts";
-import { ack, appendInbox, readInbox, readLedger, unackedInbox, updateLedger } from "../ledger.ts";
+import { ack, appendInbox, logInbox, readInbox, readLedger, unackedInbox, updateLedger } from "../ledger.ts";
 import {
   actsAsMain, claimMain, liveTerminal, mainOnly, myMain, ownerOf, owns, readsMessage, recipients, selfId,
 } from "../session.ts";
@@ -60,9 +60,12 @@ export function cmdMain(): void {
 
 /**
  * hwt tell TEXT: a working session's message to its main session (the worktree's owner). It always lands in
- * the inbox first, then goes to whichever terminal that main has now. Never addresses a fixed id.
+ * the inbox first, then goes to whichever terminal that main has now. Never addresses a fixed id. With
+ * wake: false (hwt's own notes, like a merge request the runner reads from the queue anyway) it is a log entry
+ * only and isn't put in front of the main.
  */
-export function tell(text: string): { id: string; main: string | null; owner: string | null; delivered: boolean; inbox: true } {
+export function tell(text: string, o: { wake?: boolean } = {}): { id: string; main: string | null; owner: string | null; delivered: boolean; inbox: true } {
+  const wake = o.wake ?? true;
   if (!text) die("usage: hwt tell <text>");
   const main = projectRoot();
   const l0 = readLedger(main);
@@ -76,7 +79,7 @@ export function tell(text: string): { id: string; main: string | null; owner: st
     name = t?.name || t?.labels?.["hwt.worktree"] || "";
   }
   const session = sessionFromEnv();
-  appendInbox(main, { id, at: stamp(), from: me, name, branch, path: here, session, text });
+  appendInbox(main, { id, at: stamp(), from: me, name, branch, path: here, session, text, ...(wake ? {} : { wake: false }) });
   // The sender's own session id fills a gap in the ledger (Codex's id is only known from inside).
   if (session) {
     updateLedger(main, (l) => {
@@ -92,7 +95,7 @@ export function tell(text: string): { id: string; main: string | null; owner: st
   let shown = text;
   if (who) shown += ` — ${who}${title ? `: ${title}` : ""}`;
   let delivered = false;
-  for (const t of to) if (herdr.send(t, `${shown} (hwt inbox ${id})`)) delivered = true;
+  if (wake) for (const t of to) if (herdr.send(t, `${shown} (hwt inbox ${id})`)) delivered = true;
   return { id, main: to[0] ?? null, owner: ownerOf(l, branch), delivered, inbox: true };
 }
 
@@ -106,12 +109,18 @@ function myMessages(main: string, list: InboxMessage[], l: Ledger = readLedger(m
   return list.filter((m) => readsMessage(l, me, m));
 }
 
-/** hwt inbox [--all]: this main's messages not yet acked (all with --all), one JSON object per line. */
+/**
+ * hwt inbox [--all] [--log]: this main's messages that need it, not yet acked (--all: acked ones too), one JSON
+ * object per line. --log: the log entries instead (what happened that needs no decision: merge requests,
+ * returns, deploy failures, promotions).
+ */
 export function cmdInbox(args: string[]): void {
   const main = projectRoot();
   mainOnly(main, "inbox");
-  const list = myMessages(main, args[0] === "--all" ? readInbox(main) : unackedInbox(main));
-  for (const m of list) process.stdout.write(JSON.stringify(m) + "\n");
+  const log = args.includes("--log");
+  const all = args.includes("--all");
+  const list = log ? logInbox(main) : all ? readInbox(main).filter((m) => m.wake !== false) : unackedInbox(main);
+  for (const m of myMessages(main, list)) process.stdout.write(JSON.stringify(m) + "\n");
 }
 
 export function cmdAck(args: string[]): void {
@@ -209,6 +218,8 @@ export function cmdStatus(args: string[]): void {
         .filter((m) => !["done", "failed"].includes(m.state))
         .map((m) => ({ ...m, owner: ownerOf(l, m.branch), mine: mine(ownerOf(l, m.branch)) })),
       inbox_unacked: myMessages(main, unackedInbox(main), l),
+      // The latest log entries, one line each (hwt inbox --log has them all).
+      log_recent: myMessages(main, logInbox(main), l).slice(-5).map((m) => `${m.at.slice(11, 16)} ${m.text.split("\n")[0]!.slice(0, 140)}`),
       worktrees: wts
         .filter((w) => !git || w.path !== main)
         .map((w) => {

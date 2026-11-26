@@ -103,7 +103,7 @@ describe("new / rm", () => {
     expect(argv[4]).toBe("claude");
     expect(argv[5]).toBe("--session-id");
     expect(argv[6]).toBe(o.session);
-    expect(argv.at(-1)).toStartWith("do 'it'\n\n[hwt] 메인 세션에는");
+    expect(argv.at(-1)).toStartWith("do 'it'\n\n[hwt] 메인 세션에 진행 상황");
     expect(fake().terminals[0]!.labels["hwt.worktree"]).toBe("feat-y");
     expect(ledger().worktrees["feat/y"]).toMatchObject({ terminal: "t100", name: "feat-y", agent: "claude", title: "Y 작업" });
   });
@@ -284,9 +284,10 @@ describe("main-session workflow", () => {
     expect(hwt(["new", "feat/p-sub", "--no-space"], { cwd: wt, ...as("w1") }).code).toBe(1);
     expect(json(hwt(["claim"], { cwd: wt, ...as("w1") }))).toMatchObject({ id: "w1", path: wt, promoted_from: "t1" });
     expect(ledger().worktrees["feat/p"].owner).toBe("w1");
-    // Its old main is told, in its own inbox.
-    expect(fake().sent.at(-1)).toMatchObject({ to: "t1" });
-    expect(hwt(["inbox"], as("t1")).out).toContain("[now a main] feat-p (feat/p)");
+    // Its old main has it in its log, but isn't interrupted: there is nothing for it to decide.
+    expect(fake().sent.filter((m) => m.to === "t1")).toEqual([]);
+    expect(hwt(["inbox"], as("t1")).out).toBe("");
+    expect(hwt(["inbox", "--log"], as("t1")).out).toContain("[now a main] feat-p (feat/p)");
     // Now it makes worktrees of its own, off its branch, and their mail comes to it.
     const sub = json(hwt(["new", "feat/p-sub", "--no-space"], { cwd: wt, ...as("w1") }));
     expect(sub.owner).toBe("w1");
@@ -504,9 +505,15 @@ describe("merge queue runner", () => {
     expect(item("feat/b")).toMatchObject({ state: "returned" });
     expect(item("feat/b").why).toContain("conflicts with origin/main");
     expect(item("feat/c").why).toBe("CI failed: ci");
-    const inbox = hwt(["inbox"], t1).out;
-    expect(inbox).toContain("[rebase request]");
-    expect(inbox).toContain("[merge returned]");
+    // Returns are the working sessions' to fix: the main only has them in its log, not in front of it.
+    const log = hwt(["inbox", "--log"], t1).out;
+    expect(log).toContain("[rebase request]");
+    expect(log).toContain("[merge returned]");
+    expect(log).toContain("[merge request]");
+    expect(log).not.toContain("[base updated]");
+    expect(hwt(["inbox"], t1).out).toBe("");
+    expect(fake().sent.filter((m) => m.to === "t1")).toEqual([]);
+    expect(json(hwt(["status"], t1)).log_recent.at(-1)).toContain("[merge returned]");
     expect(existsSync(wa)).toBe(false);
     // c fixes CI and queues again: it keeps its place in line.
     const seq = item("feat/c").seq;
@@ -552,7 +559,11 @@ describe("merge queue runner", () => {
     expect(r.merged).toEqual(["feat/v"]);
     expect(item("feat/v")).toMatchObject({ state: "failed", why: "deploy check failed (exit 3)" });
     expect(existsSync(wt)).toBe(true);
-    expect(hwt(["inbox"], t1).out).toContain("boom");
+    // The main's log has one line; the full log is for the working session.
+    const log = hwt(["inbox", "--log"], t1).out;
+    expect(log).toContain("[deploy failed]");
+    expect(log).not.toContain("boom");
+    expect(hwt(["inbox"], t1).out).toBe("");
   });
 
   test("after: waits for another branch; one runner at a time; moves are checked", () => {
@@ -681,7 +692,7 @@ describe("plain folder (no git)", () => {
     expect(json(hwt(["claim"], child))).toMatchObject({ id: "t100", promoted_from: "m1" });
     expect(ledgerOf().worktrees.api).toMatchObject({ self_main: true, owner: "t100" });
     expect(json(hwt(["new", "api-tests", "--agent", "none"], child))).toMatchObject({ owner: "t100", path: plain });
-    expect(hwt(["inbox"], at(m1)).out).toContain("[now a main] sub (api)");
+    expect(hwt(["inbox", "--log"], at(m1)).out).toContain("[now a main] sub (api)");
   });
 
   test("hook: silent in an unconfigured folder (no ledger left behind); a child gets its briefing", () => {

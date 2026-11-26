@@ -146,6 +146,11 @@ export interface InboxMessage {
   session: string;
   /** For one main only (otherwise the sender's worktree owner decides who reads it). */
   to?: string;
+  /**
+   * false: a log entry (the main reads it on demand: hwt inbox --log, hwt status). It isn't put in front of the
+   * main, doesn't end hwt wait and never needs an ack. Absent or true: it needs the main's decision.
+   */
+  wake?: boolean;
   text: string;
 }
 
@@ -225,9 +230,15 @@ function ackedIds(main: string): Set<string> {
   return new Set(existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean) : []);
 }
 
+/** Messages that need the main and that it hasn't handled yet (log entries never need handling). */
 export function unackedInbox(main: string): InboxMessage[] {
   const acked = ackedIds(main);
-  return readInbox(main).filter((m) => !acked.has(m.id));
+  return readInbox(main).filter((m) => m.wake !== false && !acked.has(m.id));
+}
+
+/** Log entries: what happened that the main may look at, but needn't act on. */
+export function logInbox(main: string): InboxMessage[] {
+  return readInbox(main).filter((m) => m.wake === false);
 }
 
 export function ack(main: string, ids: string[]): void {

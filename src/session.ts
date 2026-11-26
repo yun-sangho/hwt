@@ -121,16 +121,20 @@ export function claimMain(main: string, child: string | null, id = mainId()): Cl
   });
   if (promotedFrom && promotedFrom !== id) {
     const text = messages(langFor(main)).promoted(basename(path), branch);
-    notifyMain(main, promotedFrom, { branch, path, text });
+    notifyMain(main, promotedFrom, { branch, path, text, wake: false });
   }
   return { id, terminal, path, promoted_from: promotedFrom, took_over: tookOver };
 }
 
-/** Put a message in one main's inbox and, if its terminal is live, in front of it. */
-export function notifyMain(main: string, to: string, m: { branch: string; path: string; text: string }): boolean {
+/**
+ * Put a message in one main's inbox. Only one that needs its decision (wake) is also put in front of it, as a
+ * turn in its conversation; the rest stay in the ledger, so the main's context only gets what it acts on.
+ */
+export function notifyMain(main: string, to: string, m: { branch: string; path: string; text: string; wake: boolean }): boolean {
   const id = inboxId();
   const me = herdr.myTerminal();
-  appendInbox(main, { id, at: stamp(), from: me, name: "", branch: m.branch, path: m.path, session: sessionFromEnv(), to, text: m.text });
+  appendInbox(main, { id, at: stamp(), from: me, name: "", branch: m.branch, path: m.path, session: sessionFromEnv(), to, wake: m.wake, text: m.text });
+  if (!m.wake) return false;
   const t = liveTerminal(readLedger(main).mains[to]);
   return !!t && t !== me && herdr.send(t, `${m.text} (hwt inbox ${id})`);
 }

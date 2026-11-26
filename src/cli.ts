@@ -20,7 +20,7 @@ Worktrees
 Main-session workflow ("mainSession": true in .hwt.json; several mains, each owning its worktrees)
   hwt claim | adopt <worktree>... | main | status [--prs] | wait [--timeout S]
   hwt mains [ls] | mains prune [--release] [--dry-run]
-  hwt tell TEXT | inbox [--all] | ack <id>...|--all | note [--branch B] TEXT|--drop N
+  hwt tell TEXT | inbox [--all] [--log] | ack <id>...|--all | note [--branch B] TEXT|--drop N
   hwt task add TITLE [--touches p1,p2] [--detail T] | ls [--all] [--every-main] | decide <id> now|later|after:<branch> --why T | done|drop <id>
   hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT] | ls [--all] | next | log <id>
   hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]

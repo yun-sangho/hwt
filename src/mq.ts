@@ -342,12 +342,15 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     });
   };
 
-  /** Tell the working session (if live) and its main what came back to it. */
-  const giveBack = (x: Merge, text: string) => {
+  /**
+   * Give the working session (if live) what came back to it, in full. Its main gets one line in its log (not in
+   * front of it: the working session handles it), or nothing with toMain false.
+   */
+  const giveBack = (x: Merge, text: string, toMain = true) => {
     const agent = herdr.terminals().find((t) => herdr.isLive(t) && herdr.isAgent(t) && herdr.inDir(t, x.path))?.address;
     if (agent) herdr.send(agent, text);
-    const owner = ownerOf(readLedger(main), x.branch);
-    if (owner) notifyMain(main, owner, { branch: x.branch, path: x.path, text });
+    const owner = toMain ? ownerOf(readLedger(main), x.branch) : null;
+    if (owner) notifyMain(main, owner, { branch: x.branch, path: x.path, text: text.split("\n")[0]!, wake: false });
   };
 
   const fetch = () => {
@@ -411,7 +414,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
       }
     });
     for (const t of report.unblocked_tasks.filter((t) => t.owner)) {
-      notifyMain(main, t.owner!, { branch: x.branch, path: main, text: `${m.tags.unblocked} ${t.id} ${t.title} (after:${x.branch} merged)` });
+      notifyMain(main, t.owner!, { branch: x.branch, path: main, text: `${m.tags.unblocked} ${t.id} ${t.title} (after:${x.branch} merged)`, wake: true });
     }
     moveItem(id, "done", notes.join("; ") || null);
     return true;
@@ -452,7 +455,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
         moveItem(x.id, "updating", s.why, (y) => {
           y.updates = (y.updates ?? 0) + 1;
         });
-        giveBack(x, `${m.tags.baseUpdated} ${x.id} ${x.branch}: ${m.baseUpdated}`);
+        giveBack(x, `${m.tags.baseUpdated} ${x.id} ${x.branch}: ${m.baseUpdated}`, false);
         return false;
       }
       case "return":
@@ -464,7 +467,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
           moveItem(x.id, "waiting_user", s.why);
           const owner = ownerOf(readLedger(main), x.branch);
           const text = `${m.tags.approval} ${x.id} ${x.branch}${x.pr ? ` PR #${x.pr}` : ""}: ${s.why} — hwt mq approve ${x.id}`;
-          if (owner) notifyMain(main, owner, { branch: x.branch, path: x.path, text });
+          if (owner) notifyMain(main, owner, { branch: x.branch, path: x.path, text, wake: true });
           else warn(text);
         }
         return false;
