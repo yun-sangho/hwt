@@ -112,6 +112,11 @@ hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]
 hwt mq approve <id> | drop <id> | prio <id> <n> | set <id> <state> [--why T] [--force]
 ```
 
+While a PR waits in GitHub's merge queue, the runner checks the other PRs and sends approval requests.
+It can also submit eligible PRs up to each GitHub queue's reported build limit. The runner waits for
+dependencies declared with `--after` and serializes submissions when `mergeQueue.verify` or
+`mergeQueue.gc` is configured. Use `hwt mq next` or `hwt mq run --dry-run` to inspect the plan.
+
 Setup: `hwt init`, `hwt doctor`, `hwt install` / `uninstall`, `hwt hook session-start`.
 
 Optional, only without the main-session workflow (there `hwt rm` runs in the main checkout): run in

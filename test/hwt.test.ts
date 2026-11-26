@@ -440,7 +440,8 @@ describe("merge queue runner", () => {
   const item = (branch: string) => ledger().merges.filter((m: { branch: string; state: string }) => m.branch === branch && m.state !== "dropped").at(-1);
   const completeNativeMerge = (n: number, branch: string) => {
     const sha = originBranch(branch).out.trim();
-    expect(sh(["git", "-C", origin, "update-ref", "refs/heads/main", sha]).code).toBe(0);
+    const base = fake().prs![n]!.base;
+    expect(sh(["git", "-C", origin, "update-ref", `refs/heads/${base}`, sha]).code).toBe(0);
     setFake((s) => Object.assign(s.prs![n]!, { state: "MERGED", sha }));
     return sha;
   };
@@ -503,6 +504,123 @@ describe("merge queue runner", () => {
     expect(run().merged).toEqual(["feat/native"]);
     expect(item("feat/native")).toMatchObject({ state: "done", sha });
     expect(existsSync(wt)).toBe(false);
+  });
+
+  test("admits independent PRs up to the native GitHub queue's build capacity", () => {
+    const first = work("feat/first", 1);
+    setFake((s) => { s.nativeQueues = { main: 3 }; });
+    expect(run().merged).toEqual([]);
+    const second = work("feat/second", 2);
+    const third = work("feat/third", 3);
+    work("feat/fourth", 4);
+
+    expect(run("--dry-run").waiting.map((x: { branch: string; step: { act: string } }) => [x.branch, x.step.act]))
+      .toEqual([["feat/first", "wait"], ["feat/second", "enqueue"], ["feat/third", "enqueue"], ["feat/fourth", "wait"]]);
+    expect(json(hwt(["mq", "next"], t1))).toMatchObject({
+      busy: { branch: "feat/first" },
+      next: { branch: "feat/second", plan: { act: "enqueue" } },
+    });
+    expect(item("feat/second").state).toBe("queued");
+    expect(fake().calls.filter((c) => c.cmd === "gh enqueuePullRequest")).toEqual([]);
+
+    expect(run().merged).toEqual([]);
+    expect(run().waiting.map((x: { state: string }) => x.state)).toEqual(["merging", "merging", "merging", "queued"]);
+    expect(fake().calls.filter((c) => c.cmd === "gh pr merge")).toHaveLength(1);
+    expect(fake().calls.filter((c) => c.cmd === "gh enqueuePullRequest").map((c) => c.arg)).toEqual([
+      { n: "2", head: originBranch("feat/second").out.trim() },
+      { n: "3", head: originBranch("feat/third").out.trim() },
+    ]);
+    expect([first, second, third].every(existsSync)).toBe(true);
+  });
+
+  test("dry-run reserves capacity for the initial native queue submission", () => {
+    work("feat/first", 1);
+    work("feat/second", 2);
+    setFake((s) => { s.nativeQueues = { main: 1 }; });
+
+    expect(run("--dry-run").waiting.map((x: { step: { act: string } }) => x.step.act)).toEqual(["merge", "wait"]);
+    expect(fake().calls.filter((c) => c.cmd === "gh pr merge" || c.cmd === "gh enqueuePullRequest")).toEqual([]);
+    expect(run().waiting.map((x: { state: string }) => x.state)).toEqual(["merging", "queued"]);
+  });
+
+  test("checks later native queues while the first GitHub entry is pending", () => {
+    expect(sh(["git", "push", "-q", "origin", "main:release"]).code).toBe(0);
+    const first = work("feat/first", 1);
+    const second = work("feat/release", 2);
+    setFake((s) => {
+      s.nativeQueues = { main: 1, release: 1 };
+      s.prs![2]!.base = "release";
+    });
+
+    expect(run().waiting.map((x: { state: string }) => x.state)).toEqual(["merging", "merging"]);
+    const sha = completeNativeMerge(2, "feat/release");
+    const settled = run();
+    expect(settled.merged).toEqual(["feat/release"]);
+    expect(item("feat/release")).toMatchObject({ state: "done", sha });
+    expect(settled.waiting).toMatchObject([{ branch: "feat/first", state: "merging", step: { act: "wait" } }]);
+    expect(existsSync(first)).toBe(true);
+    expect(existsSync(second)).toBe(false);
+  });
+
+  test("handles approvals and CI failures during a GitHub wait while keeping current dependencies", () => {
+    work("feat/root", 1);
+    expect(run().merged).toEqual(["feat/root"]);
+    work("feat/root", 2, "root-next");
+    const dependent = work("feat/dependent", 3);
+    expect(hwt(["mq", "add", "--pr", "3", "--after", "feat/root"], { cwd: dependent }).code).toBe(0);
+    work("feat/approval", 4);
+    hwt(["note", "--branch", "feat/approval", "review first"], t1);
+    const failing = work("feat/failing", 5);
+    setFake((s) => { s.nativeQueues = { main: 5 }; });
+    checks(5, "fail");
+
+    const result = run();
+    expect(result.merged).toEqual([]);
+    expect(result.waiting.find((x: { branch: string }) => x.branch === "feat/dependent"))
+      .toMatchObject({ state: "queued", step: { act: "blocked", why: "after feat/root" } });
+    expect(item("feat/root").state).toBe("merging");
+    expect(item("feat/approval")).toMatchObject({ state: "waiting_user", why: "note: review first" });
+    expect(hwt(["inbox"], t1).out).toContain("[merge approval]");
+    expect(item("feat/failing")).toMatchObject({ state: "returned", why: "CI failed: ci" });
+    expect(existsSync(failing)).toBe(true);
+    expect(fake().calls.filter((c) => c.cmd === "gh enqueuePullRequest")).toEqual([]);
+  });
+
+  test("holds back additional queue admissions when hooks, uncertain status, or changed heads require a wait", () => {
+    work("feat/first", 1);
+    work("feat/second", 2);
+    setFake((s) => { s.nativeQueues = { main: 2 }; });
+    const configPath = join(repo, ".hwt.json");
+    const original = readFileSync(configPath, "utf8");
+    const expectSecondWaits = () => {
+      expect(run().waiting.find((x: { branch: string }) => x.branch === "feat/second"))
+        .toMatchObject({ state: "queued", step: { act: "wait" } });
+      expect(fake().calls.filter((c) => c.cmd === "gh enqueuePullRequest")).toEqual([]);
+    };
+
+    writeFileSync(configPath, JSON.stringify({ mainSession: true, mergeQueue: { verify: "true" } }));
+    expectSecondWaits();
+    writeFileSync(configPath, JSON.stringify({ mainSession: true, mergeQueue: { gc: "true" } }));
+    expectSecondWaits();
+    writeFileSync(configPath, original);
+    setFake((s) => { s.prs![1]!.queueReadError = true; });
+    expectSecondWaits();
+    setFake((s) => {
+      delete s.prs![1]!.mergeQueue;
+      delete s.prs![1]!.queueReadError;
+      s.prs![1]!.autoMerge = true;
+    });
+    expectSecondWaits();
+    setFake((s) => {
+      delete s.prs![1]!.autoMerge;
+      s.prs![1]!.mergeQueue = "queued";
+      s.prs![2]!.head = "feat/first";
+    });
+    expectSecondWaits();
+
+    setFake((s) => { s.prs![2]!.head = "feat/second"; });
+    expect(run().waiting.map((x: { state: string }) => x.state)).toEqual(["merging", "merging"]);
+    expect(fake().calls.filter((c) => c.cmd === "gh enqueuePullRequest")).toHaveLength(1);
   });
 
   test("a merge request keeps a unique ID when the generated ID collides", () => {

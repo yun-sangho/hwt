@@ -4,8 +4,7 @@
 //   blocked   an item waits while a branch in its `after` hasn't merged.
 //   states    only the moves in MOVES are allowed; every move is kept in the item's history.
 //   plan      a pure function from an item and its checks to the next step (merge, update, wait, return, ask).
-//   runner    `hwt mq run`: one runner per repo at a time (a lease in the ledger), one merge at a time; each
-//             merge goes through the deploy check and cleanup before the next one starts.
+//   runner    `hwt mq run`: one runner per repo at a time (a lease in the ledger).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { hostname } from "node:os";
@@ -35,7 +34,7 @@ export const MOVES: Record<MergeState, MergeState[]> = {
 export const STATES = Object.keys(MOVES) as MergeState[];
 /** In line: the runner looks at these. */
 export const WAITING: MergeState[] = ["queued", "updating", "waiting_user"];
-/** Merged or merging: one at a time for the repo. */
+/** Requests submitted to GitHub or being finalized locally. */
 export const IN_FLIGHT: MergeState[] = ["merging", "verifying", "cleaning"];
 /** Shown by default (not finished). */
 export const OPEN: MergeState[] = [...WAITING, ...IN_FLIGHT, "returned"];
@@ -72,14 +71,18 @@ export function nextSeq(l: Ledger): number {
 /** Branches in m.after that haven't merged yet. A branch with no merge request and no live worktree counts as merged. */
 export function blockedBy(l: Ledger, m: Merge): string[] {
   return (m.after ?? []).filter((b) => {
-    const ms = (l.merges ?? []).filter((x) => x.branch === b);
-    if (ms.some((x) => x.state === "done")) return false;
-    if (ms.some((x) => x.state !== "dropped")) return true;
+    const latest = (l.merges ?? []).findLast((x) => x.branch === b && x.state !== "dropped");
+    if (latest) return latest.state !== "done";
     return l.worktrees[b]?.state === "active";
   });
 }
 
 // ---- Checks -------------------------------------------------------------------------------
+
+interface PullRequestRef {
+  id: string;
+  host: string;
+}
 
 export interface PrInfo {
   state: string;
@@ -88,10 +91,13 @@ export interface PrInfo {
   ci: "pass" | "fail" | "pending" | null;
   failing: string[];
   base: string | null;
+  head: string | null;
+  ref: PullRequestRef | null;
 }
 
 export interface Checks {
   base: string;
+  head: string | null;
   conflict: boolean;
   dirty: boolean | null;
   /** Local commits the PR doesn't have yet (not pushed). */
@@ -107,40 +113,53 @@ export interface Checks {
 
 export function prInfo(main: string, pr: number): PrInfo | null {
   if (!has("gh")) return null;
-  const r = run(["gh", "pr", "view", String(pr), "--json", "state,mergeable,mergeStateStatus,statusCheckRollup,baseRefName"], { cwd: main });
-  if (!r.ok) return null;
-  try {
-    const v = JSON.parse(r.out) as {
-      state: string;
-      mergeable: string;
-      mergeStateStatus?: string;
-      baseRefName?: string;
-      statusCheckRollup?: { name?: string; context?: string; conclusion?: string; state?: string }[];
-    };
-    const rollup = v.statusCheckRollup ?? [];
-    const word = (x: { conclusion?: string; state?: string }) => x.conclusion || x.state || "";
-    const failing = rollup
-      .filter((x) => ["FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "ACTION_REQUIRED"].includes(word(x)))
-      .map((x) => x.name || x.context || "?");
-    const ci = rollup.length === 0
-      ? null
-      : failing.length
-        ? "fail"
-        : rollup.every((x) => ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(word(x)))
-          ? "pass"
-          : "pending";
-    return { state: v.state, mergeable: v.mergeable, mergeStateStatus: v.mergeStateStatus ?? null, ci, failing, base: v.baseRefName ?? null };
-  } catch {
-    return null;
-  }
+  const v = readGhJson(main, ["pr", "view", String(pr), "--json", "state,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,headRefOid,id,url"]);
+  if (!v || typeof v.state !== "string" || typeof v.mergeable !== "string") return null;
+  const rollup: unknown = v.statusCheckRollup ?? [];
+  if (!Array.isArray(rollup) || !rollup.every(isObject)) return null;
+  const word = (x: Record<string, unknown>) => nonemptyString(x.conclusion) ?? nonemptyString(x.state) ?? "";
+  const failing = rollup
+    .filter((x) => ["FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "ACTION_REQUIRED"].includes(word(x)))
+    .map((x) => nonemptyString(x.name) ?? nonemptyString(x.context) ?? "?");
+  const ci = rollup.length === 0
+    ? null
+    : failing.length
+      ? "fail"
+      : rollup.every((x) => ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(word(x)))
+        ? "pass"
+        : "pending";
+  return {
+    state: v.state,
+    mergeable: v.mergeable,
+    mergeStateStatus: nonemptyString(v.mergeStateStatus),
+    ci,
+    failing,
+    base: nonemptyString(v.baseRefName),
+    head: nonemptyString(v.headRefOid),
+    ref: pullRequestRef(v),
+  };
 }
 
 type MergeStatus =
   | { kind: "merged"; sha: string }
+  | { kind: "queued"; queue: string }
   | { kind: "closed" | "open" | "pending" | "unknown" };
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const nonemptyString = (value: unknown): string | null => typeof value === "string" && value ? value : null;
+
+function pullRequestRef(pr: Record<string, unknown>): PullRequestRef | null {
+  const host = typeof pr.url === "string" ? URL.parse(pr.url)?.hostname : null;
+  const id = nonemptyString(pr.id);
+  return host && id ? { id, host } : null;
+}
+
+function queueKey(host: string, queue: unknown): string | null {
+  const id = isObject(queue) ? nonemptyString(queue.id) : null;
+  return id ? `${host}/${id}` : null;
 }
 
 function readGhJson(main: string, args: string[]): Record<string, unknown> | null {
@@ -169,18 +188,21 @@ function mergeStatus(main: string, number: number | null): MergeStatus {
   if (!pr) return { kind: "unknown" };
   const state = mergeState(pr);
   if (state.kind !== "open") return state;
-  const url = typeof pr.url === "string" ? URL.parse(pr.url) : null;
-  if (!url?.hostname || typeof pr.id !== "string") return { kind: "unknown" };
+  const ref = pullRequestRef(pr);
+  if (!ref) return { kind: "unknown" };
 
   const current = readGhJson(main, [
-    "api", "graphql", "--hostname", url.hostname, "-f", `id=${pr.id}`,
-    "-f", "query=query($id:ID!){node(id:$id){...on PullRequest{state mergeCommit{oid} mergeQueueEntry{id} autoMergeRequest{enabledAt}}}}",
+    "api", "graphql", "--hostname", ref.host, "-f", `id=${ref.id}`,
+    "-f", "query=query($id:ID!){node(id:$id){...on PullRequest{state mergeCommit{oid} mergeQueueEntry{id mergeQueue{id}} autoMergeRequest{enabledAt}}}}",
     "--jq", ".data.node",
   ]);
   const observed = mergeState(current);
   if (observed.kind !== "open" || !current) return observed;
   if (current.mergeQueueEntry === null && current.autoMergeRequest === null) return observed;
-  if (isObject(current.mergeQueueEntry) && typeof current.mergeQueueEntry.id === "string") return { kind: "pending" };
+  if (isObject(current.mergeQueueEntry) && nonemptyString(current.mergeQueueEntry.id)) {
+    const queue = queueKey(ref.host, current.mergeQueueEntry.mergeQueue);
+    return queue ? { kind: "queued", queue } : { kind: "pending" };
+  }
   if (isObject(current.autoMergeRequest) && typeof current.autoMergeRequest.enabledAt === "string") return { kind: "pending" };
   return { kind: "unknown" };
 }
@@ -206,12 +228,14 @@ export function mqChecks(main: string, m: Pick<Merge, "branch" | "pr" | "path">,
   const prj = m.pr ? prInfo(main, m.pr) : null;
   const baseName = baseBranch(main, prj?.base);
   const base = remoteOr(main, baseName);
-  const head = remoteOr(main, m.branch);
+  const headRef = remoteOr(main, m.branch);
+  const headOid = gitOut(["rev-parse", "--verify", headRef], main);
+  const head = headOid ?? headRef;
   const count = (range: string) => Number(gitOut(["rev-list", "--count", range], main) ?? 0) || 0;
   const conflict = !git(["merge-tree", "--write-tree", base, head], main).ok;
   const ahead = count(`${base}..${head}`);
   const behind = count(`${head}..${base}`);
-  const unpushed = head === m.branch ? 0 : count(`${head}..${m.branch}`);
+  const unpushed = headRef === m.branch ? 0 : count(`${head}..${m.branch}`);
   const dirty = existsSync(m.path) ? isDirty(m.path) : null;
   const files = (gitOut(["diff", "--name-only", `${base}...${head}`], main) ?? "").split("\n").filter(Boolean);
   const lines = (gitOut(["diff", "--numstat", `${base}...${head}`], main) ?? "")
@@ -232,7 +256,7 @@ export function mqChecks(main: string, m: Pick<Merge, "branch" | "pr" | "path">,
   // A note about this branch is the person's word on it: a main reads it before the merge goes ahead.
   for (const n of l.notes) if (n.branch === m.branch) why.push(`note: ${n.text}`);
   return {
-    base, conflict, dirty, unpushed, ahead, behind, pr: prj, lines,
+    base, head: headOid, conflict, dirty, unpushed, ahead, behind, pr: prj, lines,
     approval: why.length ? "user" : "auto",
     approval_why: why,
     ready: !conflict && dirty !== true && ahead > 0 && (prj === null || (prj.state === "OPEN" && prj.ci === "pass")),
@@ -241,7 +265,7 @@ export function mqChecks(main: string, m: Pick<Merge, "branch" | "pr" | "path">,
 
 // ---- Plan ---------------------------------------------------------------------------------
 
-export type Step =
+type QueueStep =
   | { act: "merge" }
   | { act: "update"; why: string }
   | { act: "wait"; why: string }
@@ -251,8 +275,10 @@ export type Step =
   | { act: "merged_elsewhere" }
   | { act: "drop"; why: string };
 
+export type Step = QueueStep | { act: "enqueue" };
+
 /** The next step for an item in line. Pure: the runner does what it says. */
-export function plan(m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: string[]; requireChecks?: boolean }): Step {
+export function plan(m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: string[]; requireChecks?: boolean }): QueueStep {
   if (o.blockedBy.length) return { act: "blocked", why: `after ${o.blockedBy.join(", ")}` };
   if (m.pr == null) return { act: "return", why: "no PR: open one, then hwt mq add --pr <n>" };
   if (!c.pr) return { act: "wait", why: "can't read the PR (gh)" };
@@ -359,7 +385,21 @@ export interface RunReport {
   dry_run?: boolean;
 }
 
-type Progress = "next" | "restart" | { id: string; why: string };
+type PendingMerge =
+  | { kind: "native"; queue: string; why: string }
+  | { kind: "serial"; why: string };
+
+type PendingMerges = Map<string, PendingMerge>;
+type Progress = "next" | "restart" | PendingMerge;
+
+interface NativeAdmission {
+  ref: PullRequestRef;
+  head: string;
+  queue: string;
+  capacity: number;
+}
+
+type ScheduledStep = QueueStep | { act: "enqueue"; admission: NativeAdmission };
 
 export const queueConfig = (main: string): Required<Pick<MergeQueueConfig, "method" | "verifyTimeout" | "cleanup" | "maxUpdates" | "requireChecks">> & MergeQueueConfig => ({
   method: "squash",
@@ -369,6 +409,100 @@ export const queueConfig = (main: string): Required<Pick<MergeQueueConfig, "meth
   requireChecks: existsSync(join(main, ".github", "workflows")),
   ...mainConfig(main).mergeQueue,
 });
+
+function nativeAdmission(main: string, c: Checks): NativeAdmission | null {
+  const pr = c.pr;
+  if (!pr?.ref || !pr.base || !c.head || c.head !== pr.head) return null;
+  const ref = pr.ref;
+  const current = readGhJson(main, [
+    "api", "graphql", "--hostname", ref.host, "-f", `id=${ref.id}`, "-f", `base=${pr.base}`,
+    "-f", "query=query($id:ID!,$base:String!){node(id:$id){...on PullRequest{state baseRefName headRefOid repository{mergeQueue(branch:$base){id configuration{maximumEntriesToBuild}}}}}}",
+    "--jq", ".data.node",
+  ]);
+  if (current?.state !== "OPEN" || current.baseRefName !== pr.base || current.headRefOid !== c.head) return null;
+  const queue = isObject(current.repository) ? current.repository.mergeQueue : null;
+  if (!isObject(queue) || !isObject(queue.configuration)) return null;
+  const key = queueKey(ref.host, queue);
+  const capacity = queue.configuration.maximumEntriesToBuild;
+  if (!key || typeof capacity !== "number" || !Number.isSafeInteger(capacity) || capacity <= 0) return null;
+  return { ref, head: c.head, queue: key, capacity };
+}
+
+function schedule(
+  main: string, x: Merge, c: Checks, l: Ledger, cfg: ReturnType<typeof queueConfig>, pending: PendingMerges,
+): ScheduledStep {
+  const next = plan(x, c, { ...cfg, blockedBy: blockedBy(l, x) });
+  if (!pending.size) return next;
+  const wait: QueueStep = { act: "wait", why: "waiting for in-flight merges" };
+  if (next.act === "update" || next.act === "merged_elsewhere") return wait;
+  if (next.act !== "merge") return next;
+  const waits = [...pending.values()];
+  if (cfg.verify || cfg.gc || waits.some((entry) => entry.kind === "serial")) return wait;
+  const admission = nativeAdmission(main, c);
+  if (!admission) return wait;
+  const used = waits.filter((entry) => entry.kind === "native" && entry.queue === admission.queue).length;
+  if (used >= admission.capacity) return { act: "wait", why: "GitHub merge queue is at its build capacity" };
+  return { act: "enqueue", admission };
+}
+
+function pendingMerge(status: MergeStatus, mayOverlap: boolean): PendingMerge {
+  if (status.kind === "queued" && mayOverlap) return { kind: "native", queue: status.queue, why: "waiting for the GitHub merge queue" };
+  if (status.kind === "queued" || status.kind === "pending") return { kind: "serial", why: "waiting for the GitHub merge queue or auto-merge" };
+  return { kind: "serial", why: "can't confirm PR merge status (gh)" };
+}
+
+function enqueue(main: string, { ref, head }: NativeAdmission): RunResult {
+  return run([
+    "gh", "api", "graphql", "--hostname", ref.host, "-f", `id=${ref.id}`, "-f", `head=${head}`,
+    "-f", "query=mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{id}}}",
+  ], { cwd: main });
+}
+
+export type PreviewEntry = RunReport["waiting"][number] & { checks?: Checks };
+
+export function* previewQueue(main: string, l: Ledger, observed?: PendingMerges): Generator<PreviewEntry> {
+  const cfg = queueConfig(main);
+  const items = ordered(l);
+  const pending = new Map(observed);
+  const inFlight = items.filter((x) => IN_FLIGHT.includes(x.state));
+  const inFlightSteps = new Map<string, Step>();
+  for (const x of inFlight) {
+    const status = observed ? null : mergeStatus(main, x.pr);
+    const entry: PendingMerge = pending.get(x.id) ?? (status
+      ? pendingMerge(status, x.state === "merging")
+      : { kind: "serial", why: `${x.state}: resumes here` });
+    pending.set(x.id, entry);
+    const step: Step = status?.kind === "merged"
+      ? { act: "merged_elsewhere" }
+      : status?.kind === "closed"
+        ? { act: "return", why: "PR closed before merging" }
+        : status?.kind === "open"
+          ? { act: "return", why: "PR is open with no pending GitHub merge request" }
+          : { act: "wait", why: entry.why };
+    inFlightSteps.set(x.id, step);
+  }
+  for (const x of items) {
+    const row = { id: x.id, branch: x.branch, state: x.state };
+    const inFlightStep = inFlightSteps.get(x.id);
+    if (inFlightStep) {
+      yield { ...row, step: inFlightStep };
+      continue;
+    }
+    if (!WAITING.includes(x.state)) continue;
+    if (x.state === "waiting_user" && !x.approved) {
+      yield { ...row, step: { act: "ask", why: x.why ?? "" } };
+      continue;
+    }
+    const checks = mqChecks(main, x, l);
+    const step = schedule(main, x, checks, l, cfg, pending);
+    yield { ...row, step: step.act === "enqueue" ? { act: "enqueue" } : step, checks };
+    if (step.act !== "enqueue" && step.act !== "merge") continue;
+    const admission = step.act === "enqueue" ? step.admission : nativeAdmission(main, checks);
+    if (admission) {
+      pending.set(x.id, { kind: "native", queue: admission.queue, why: "scheduled for the GitHub merge queue" });
+    }
+  }
+}
 
 function tail(s: string, n = 20): string {
   return s.trim().split("\n").slice(-n).join("\n");
@@ -462,13 +596,14 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     if (currentBranch(main) === base && tracked && hasRef(main, `refs/remotes/origin/${base}`)) {
       run(["git", "merge", "-q", "--ff-only", `origin/${base}`], { cwd: main });
     }
+    const previouslyUnblocked = report.unblocked_tasks.length;
     updateLedger(main, (l2) => {
       for (const t of l2.tasks ?? []) {
         if (t.branch === x.branch && t.state === "running") Object.assign(t, { state: "done", closed: stamp() });
         if (t.state === "decided" && t.decision === `after:${x.branch}`) report.unblocked_tasks.push({ id: t.id, title: t.title, owner: t.owner ?? null });
       }
     });
-    for (const t of report.unblocked_tasks.filter((t) => t.owner)) {
+    for (const t of report.unblocked_tasks.slice(previouslyUnblocked).filter((t) => t.owner)) {
       notifyMain(main, t.owner!, { branch: x.branch, path: main, text: `${m.tags.unblocked} ${t.id} ${t.title} (after:${x.branch} merged)`, wake: true });
     }
     moveItem(id, "done", notes.join("; ") || null);
@@ -479,37 +614,41 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     giveBack(x, `${rebase ? m.tags.rebaseRequest : m.tags.returned} ${x.id} ${x.branch}: ${why}. ${m.requeue}`);
   };
 
-  const reconcile = (x: Merge, submit?: RunResult): Progress => {
+  const reconcile = (x: Merge, submission?: { result: RunResult; command: string }): Progress => {
     const status = mergeStatus(main, x.pr);
     switch (status.kind) {
       case "merged":
         finish(x, status.sha, null);
         return "restart";
+      case "queued":
       case "pending":
-        return { id: x.id, why: "waiting for the GitHub merge queue or auto-merge" };
       case "unknown":
-        return { id: x.id, why: "can't confirm PR merge status (gh)" };
+        return pendingMerge(status, x.state === "merging" || !!submission);
       case "closed":
         giveBackMerge(x, "PR closed before merging");
         return "next";
       case "open":
-        if (submit?.ok) return { id: x.id, why: "waiting for GitHub to confirm the merge request" };
-        if (submit) moveItem(x.id, "queued", `gh pr merge failed: ${tail(submit.err || submit.out, 3)}`);
+        if (submission?.result.ok) return { kind: "serial", why: "waiting for GitHub to confirm the merge request" };
+        if (submission) moveItem(x.id, "queued", `${submission.command} failed: ${tail(submission.result.err || submission.result.out, 3)}`);
         else giveBackMerge(x, "PR is open with no pending GitHub merge request");
         return "next";
     }
   };
 
-  const step = (x: Merge, s: Step): Progress => {
+  const step = (x: Merge, s: ScheduledStep): Progress => {
     switch (s.act) {
       case "merge": {
         moveItem(x.id, "merging", null);
         const r = run(["gh", "pr", "merge", String(x.pr), `--${cfg.method}`], { cwd: main });
-        return reconcile(x, r);
+        return reconcile(x, { result: r, command: "gh pr merge" });
+      }
+      case "enqueue": {
+        moveItem(x.id, "merging", null);
+        return reconcile(x, { result: enqueue(main, s.admission), command: "GitHub merge queue admission" });
       }
       case "merged_elsewhere": {
         const status = mergeStatus(main, x.pr);
-        if (status.kind !== "merged") return { id: x.id, why: "can't confirm PR merge status (gh)" };
+        if (status.kind !== "merged") return { kind: "serial", why: "can't confirm PR merge status (gh)" };
         finish(x, status.sha, "merged outside the queue");
         return "restart";
       }
@@ -549,63 +688,51 @@ export function runQueue(main: string, o: RunOptions): RunReport {
   };
 
   /** One pass over the line: in-flight items first (a crashed runner left them), then in order. */
-  const pass = (): Progress => {
+  const pass = (): PendingMerges | "restart" => {
     fetch();
     let l = readLedger(main);
+    const pending: PendingMerges = new Map();
+    let finalized = false;
     for (const x of ordered(l).filter((y) => IN_FLIGHT.includes(y.state))) {
-      if (o.dryRun) {
-        report.waiting.push({ id: x.id, branch: x.branch, state: x.state, step: { act: "wait", why: `${x.state}: resumes here` } });
-        return "next";
-      }
       const progress = reconcile(x);
-      if (progress !== "next") return progress;
+      if (progress === "restart") finalized = true;
+      else if (progress !== "next") pending.set(x.id, progress);
     }
+    if (finalized) return "restart";
     l = readLedger(main);
     for (const x of ordered(l).filter((y) => y.state === "queued" || y.state === "updating" || y.state === "waiting_user")) {
       if (x.state === "waiting_user" && !x.approved) continue;
       const c = mqChecks(main, x, l);
-      const s = plan(x, c, { maxUpdates: cfg.maxUpdates, requireChecks: cfg.requireChecks, blockedBy: blockedBy(l, x) });
-      if (o.dryRun) {
-        report.waiting.push({ id: x.id, branch: x.branch, state: x.state, step: s });
-        continue;
-      }
+      const s = schedule(main, x, c, l, cfg, pending);
       const progress = step(x, s);
-      if (progress !== "next") return progress;
+      if (progress === "restart") return progress;
+      if (progress !== "next") pending.set(x.id, progress);
     }
-    return "next";
+    return pending;
   };
 
-  const leftover = (pending: { id: string; why: string } | null) => {
+  const leftover = (pending?: PendingMerges) => {
     fetch();
-    const l = readLedger(main);
-    report.waiting = ordered(l)
-      .filter((x) => IN_FLIGHT.includes(x.state) || WAITING.includes(x.state))
-      .map((x) => {
-        let next: Step;
-        if (pending?.id === x.id) next = { act: "wait", why: pending.why };
-        else if (IN_FLIGHT.includes(x.state)) next = { act: "wait", why: `${x.state}: resumes here` };
-        else if (x.state === "waiting_user" && !x.approved) next = { act: "ask", why: x.why ?? "" };
-        else next = plan(x, mqChecks(main, x, l), { maxUpdates: cfg.maxUpdates, requireChecks: cfg.requireChecks, blockedBy: blockedBy(l, x) });
-        return { id: x.id, branch: x.branch, state: x.state, step: next };
-      });
+    report.waiting = Array.from(previewQueue(main, readLedger(main), pending),
+      ({ id, branch, state, step }) => ({ id, branch, state, step }));
   };
 
   if (o.dryRun) {
-    pass();
+    leftover();
     return report;
   }
   acquireLease(main, o.by);
-  let pending: { id: string; why: string } | null = null;
+  let pending: PendingMerges = new Map();
   try {
     const end = Date.now() + o.timeout * 1000;
     for (;;) {
       beat(main);
       const progress = pass();
       if (progress === "restart") continue;
-      pending = progress === "next" ? null : progress;
+      pending = progress;
       const l = readLedger(main);
       const inLine = (l.merges ?? []).some((x) => x.state === "queued" || x.state === "updating" || (x.state === "waiting_user" && x.approved));
-      if (!o.watch || (!pending && !inLine) || Date.now() >= end) break;
+      if (!o.watch || (!pending.size && !inLine) || Date.now() >= end) break;
       sleepMs(Math.min(o.interval * 1000, Math.max(0, end - Date.now())));
     }
   } finally {

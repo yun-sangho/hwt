@@ -21,6 +21,7 @@ export interface FakeState {
   sent: { to: string; text: string }[];
   calls: { cmd: string; arg: Record<string, unknown> }[];
   prs?: Record<string, FakePr>;
+  nativeQueues?: Record<string, number>;
 }
 
 export interface FakePr {

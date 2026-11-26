@@ -11,7 +11,7 @@ import { die, printJson, shortId, stamp } from "../util.ts";
 import { tell } from "./session.ts";
 import { removeWorktree } from "./worktree.ts";
 import {
-  blockedBy, IN_FLIGHT, leaseLive, move, mqChecks, nextSeq, OPEN, ordered, plan, queueConfig, runQueue, STATES, WAITING,
+  blockedBy, IN_FLIGHT, leaseLive, move, mqChecks, nextSeq, OPEN, ordered, previewQueue, runQueue, STATES, WAITING, type PreviewEntry,
 } from "../mq.ts";
 import type { Merge } from "../ledger.ts";
 import { actsAsMain, ownerOf, owns, selfId } from "../session.ts";
@@ -201,15 +201,22 @@ export function cmdMq(args: string[]): void {
       const me = selfId(l);
       const lease = leaseLive(l.mq?.lease) ? l.mq!.lease : null;
       const busy = ordered(l).find((m) => IN_FLIGHT.includes(m.state));
-      if (busy) return printJson({ busy, runner: lease }, true);
-      const { maxUpdates, requireChecks } = queueConfig(main);
-      const mineInLine = ordered(l).filter((m) => m.state === "queued" || m.state === "updating").filter((m) => owns(me, ownerOf(l, m.branch)));
-      const next = mineInLine[0];
-      const checks = next ? mqChecks(main, next, l) : null;
+      let planned: PreviewEntry | undefined;
+      for (const item of previewQueue(main, l)) {
+        if (item.state !== "queued" && item.state !== "updating") continue;
+        if (!owns(me, ownerOf(l, item.branch))) continue;
+        planned ??= item;
+        if (item.step.act === "wait" || item.step.act === "blocked") continue;
+        planned = item;
+        break;
+      }
+      const next = l.merges?.find((m) => m.id === planned?.id);
+      const checks = planned?.checks;
       return printJson(
         {
-          next: next && checks
-            ? { ...next, checks, plan: plan(next, checks, { maxUpdates, requireChecks, blockedBy: blockedBy(l, next) }), may_merge: checks.approval === "auto" || next.approved != null }
+          ...(busy ? { busy } : {}),
+          next: next && planned && checks
+            ? { ...next, checks, plan: planned.step, may_merge: checks.approval === "auto" || next.approved != null }
             : null,
           waiting_user: ordered(l)
             .filter((m) => m.state === "waiting_user" && owns(me, ownerOf(l, m.branch)))

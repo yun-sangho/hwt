@@ -60,9 +60,9 @@ hwt task done|drop <id> [--why "…"]
 
 **부르는 이름**: 작업 세션은 "worktree (제목)" 으로 부른다. 예: `feat-t14-slot-edit (T14 슬롯 수정)`. 터미널·세션 ID 로 부르지 않는다. 그 터미널에는 `hwt.worktree=<worktree>` 라벨이 있다.
 
-**머지 큐** — 장부 안의 실제 큐이고 `hwt mq run` 이 처리한다. 레포마다 러너는 하나(lease)이고, 모든 메인을 통틀어 한 번에 하나씩 머지한다. 러너는 모든 메인의 항목을 처리하고, 손이 필요한 것만 각 항목의 메인에게 알린다.
+**머지 큐** — 장부에 기록하며 `hwt mq run`으로 처리한다. 레포마다 러너 하나가 모든 메인의 항목을 처리하고, 대응이 필요한 항목은 주인 메인에게 알린다.
 ```sh
-hwt mq run [--watch] [--interval S] [--timeout S]   # 큐 처리. --watch 는 줄이 빌 때까지 CI 를 계속 확인한다(백그라운드로)
+hwt mq run [--watch] [--interval S] [--timeout S]   # --watch는 CI와 GitHub 큐 상태를 계속 확인한다
 hwt mq run --dry-run          # 항목마다 무엇을 할지만 보여 준다. 아무것도 바꾸지 않는다
 hwt mq ls [--all] / mq next   # 줄 순서, 주인, blocked_by, 체크. next = 내 다음 항목과 그 계획
 hwt mq approve <id>           # 사용자가 승인(waiting_user → queued)
@@ -70,6 +70,7 @@ hwt mq prio <id> <n> / mq drop <id> / mq log <id>   # 순서 바꾸기(클수록
 hwt mq set <id> <state> [--force]   # 수동 이동. 허용된 이동만, --force 는 사용자가 덮어쓸 때만
 ```
 - 순서: 우선순위, 그다음 들어온 순서. 반려 뒤 다시 넣은 브랜치는 자리를 유지한다. `mq add --after b1,b2` 는 그 브랜치들이 머지될 때까지 기다린다
+- GitHub 큐 대기 중에도 다른 PR의 체크를 확인하고 승인 요청을 보낸다. 조건을 충족한 독립 PR은 대상 큐의 동시 빌드 한도 내에서 제출한다. 진행 중인 PR이 정리된 뒤 직접 머지와 브랜치 갱신을 실행한다. `mergeQueue.verify` 또는 `mergeQueue.gc`를 설정한 레포는 한 건씩 제출한다.
 - 러너는 항목마다 한 단계를 정한다: **merge**(CI 통과, 승인 auto 또는 승인됨) → `gh pr merge --squash`(`mergeQueue.method`) → 배포 확인(`mergeQueue.verify`) → 정리: `hwt rm -D --kill-agents`, 원격 브랜치 삭제, 레포 gc(`mergeQueue.gc`), 메인 체크아웃 fast-forward, 태스크 `done`. **update**(베이스보다 뒤처짐, 충돌 없음) → `gh pr update-branch` 후 CI 를 다시 기다린다(`maxUpdates` 까지, 넘으면 반려). **wait**(CI 실행 중) / **blocked**(`after`). **ask**(mergeApproval 경로·줄 수, 그 브랜치에 대한 `note`, 브랜치 보호) → `waiting_user` + 주인 메인에게 `[머지 승인 요청]`. **return**(충돌, CI 실패, 커밋 안 된 변경, push 안 된 커밋, PR 없음) → `returned` + 작업 세션에 `[리베이스 요청]`/`[머지 반려]`(메인에는 기록 한 줄)
 - 배포 확인 실패 → `failed`, 워크트리는 남기고 로그를 작업 세션에 보낸다. 같은 워크트리에서 고치고 다시 `mq add`
 - 세션이 독립 메인인 워크트리는 정리 때 지우지 않는다
