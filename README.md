@@ -85,7 +85,8 @@ User defaults go in `~/.config/hwt/config.json` (`root`, `agent`, `lang`). Check
 
 - **Setup is safe to run twice**, and the repo's own scripts cope with a checkout that never ran it
   (checkouts made from Herdr's sidebar or plain `git worktree add` don't run setup).
-- **There is no teardown.** `hwt rm` only removes. Anything a checkout starts (databases, ports, dev
+- **There is no teardown.** `hwt rm` only removes. (When the remove fails because something still works in
+  the checkout, such as a dev server writing build output, hwt stops those processes and tries again.) Anything a checkout starts (databases, ports, dev
   servers) must be reclaimable after the checkout is gone: name resources after the checkout and give the
   repo a `gc` that removes the ones whose checkout no longer exists. The main session runs it after `rm`.
   This way the cleanup works however a checkout was removed.

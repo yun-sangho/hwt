@@ -223,7 +223,8 @@ export function cmdStatus(args: string[]): void {
       worktrees: wts
         .filter((w) => !git || w.path !== main)
         .map((w) => {
-          const r = l.worktrees[w.branch] ?? null;
+          // A session may have switched its worktree to another branch: the record is found by its path then.
+          const r = l.worktrees[w.branch] ?? Object.values(l.worktrees).find((x) => x.state === "active" && x.path === w.path) ?? null;
           const name = git ? basename(w.path) : w.branch;
           const pr = prs?.find((p) => p.headRefName === w.branch);
           const owner = r?.owner ?? null;
@@ -248,7 +249,7 @@ export function cmdStatus(args: string[]): void {
           };
         }),
       ledger_only: Object.entries(l.worktrees)
-        .filter(([b, w]) => w.state === "active" && !wts.some((x) => x.branch === b))
+        .filter(([b, w]) => w.state === "active" && !wts.some((x) => x.branch === b || x.path === w.path))
         .map(([b]) => b),
     },
     true,

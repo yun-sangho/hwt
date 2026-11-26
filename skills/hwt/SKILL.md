@@ -98,7 +98,7 @@ hwt mq add --pr <n> "summary" # after pushing and opening the PR; stay up until 
 ```sh
 hwt new feat/x --title "T3 login fix" --task "<instructions>" [--task-id <id>]
 hwt new feat/x --agent codex --task "…"
-hwt new feat/x --resume-from <session id> [--fork]
+hwt new feat/x --resume-from <session id> [--fork]   # also after a restart that left its space open with no agent
 hwt new feat/x --agent none        # just a shell
 hwt new feat/x --no-space          # checkout only
 hwt new docs --task "…" [--dir sub] # plain folder: a child in this folder (or sub), no checkout
@@ -130,4 +130,6 @@ hwt rm docs --kill-agents          # plain folder: closes only that child's spac
 - Refuses while an agent terminal is live in the checkout: `hc read <id>` to check it isn't working, then `--kill-agents`
 - Refuses with uncommitted changes. `-f` (discard them) only with the person's explicit permission
 - `-D` only when the branch is merged or the person allowed it
+- Takes the branch the worktree is on now, even if its session switched branches. Something still writing into the checkout (a dev server) is stopped and the remove tried again. A worktree already deleted by hand is recorded as removed
+- If it still fails, fix what it names and run `hwt rm` again. Never `rm -rf` a worktree or `hc kill` its terminals by hand: the ledger keeps it as active
 - Don't remove worktrees you didn't make (the person's or another agent's) without asking
