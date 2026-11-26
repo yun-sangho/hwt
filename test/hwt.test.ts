@@ -1,6 +1,6 @@
 // End-to-end tests: a throwaway git repo, the real CLI, and fake herdr-app/hc on PATH.
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shellWords, slug } from "../src/util.ts";
@@ -407,6 +407,52 @@ describe("main-session workflow", () => {
     const st = json(hwt(["status"]));
     expect(st.notes[0]).toMatchObject({ branch: "feat/s", text: "merge it when green" });
     expect(st.worktrees[0]).toMatchObject({ worktree: "feat-s", label: "feat-s (S)", branch: "feat/s" });
+  });
+});
+
+describe("ledger safety", () => {
+  const file = () => join(repo, ".git", "hwt", "ledger.json");
+
+  test("each write keeps the ledger it replaced as ledger.json.bak", () => {
+    config({ mainSession: true });
+    hwt(["note", "first"]);
+    hwt(["note", "second"]);
+    const bak = JSON.parse(readFileSync(file() + ".bak", "utf8"));
+    expect(bak.notes.map((n: { text: string }) => n.text)).toEqual(["first"]);
+    expect(ledger().notes.map((n: { text: string }) => n.text)).toEqual(["first", "second"]);
+  });
+
+  test("a ledger that can't be read stops reads and writes and is left as it is", () => {
+    config({ mainSession: true });
+    hwt(["note", "keep me"]);
+    hwt(["note", "and me"]);
+    for (const broken of ['{"notes": [', "", "null", "[]"]) {
+      writeFileSync(file(), broken);
+      const w = hwt(["note", "would wipe the rest"]);
+      expect(w.code).toBe(1);
+      expect(w.err).toContain("can't read");
+      expect(w.err).toContain("ledger.json.bak");
+      expect(readFileSync(file(), "utf8")).toBe(broken);
+      expect(hwt(["status"]).code).toBe(1);
+    }
+    writeFileSync(file(), readFileSync(file() + ".bak"));
+    expect(ledger().notes.map((n: { text: string }) => n.text)).toEqual(["keep me"]);
+  });
+
+  test("a held lock stops the write instead of writing without it; a stale one is taken over", () => {
+    config({ mainSession: true });
+    hwt(["note", "one"]);
+    const lock = join(repo, ".git", "hwt", "lock");
+    mkdirSync(lock);
+    const r = hwt(["note", "two"], { env: { HWT_LOCK_WAIT_MS: "300" } });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("locked");
+    expect(ledger().notes).toHaveLength(1);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    expect(hwt(["note", "two"], { env: { HWT_LOCK_WAIT_MS: "300" } }).code).toBe(0);
+    expect(ledger().notes).toHaveLength(2);
+    expect(existsSync(lock)).toBe(false);
   });
 });
 
