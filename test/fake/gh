@@ -12,6 +12,9 @@ const git = (...a: string[]) => {
   return { ok: p.exitCode === 0, out: p.stdout.toString().trim() };
 };
 const count = (range: string) => Number(git("rev-list", "--count", range).out) || 0;
+const arg = (key: string) => args.find((value) => value.startsWith(key + "="))?.slice(key.length + 1);
+const queueCapacity = (pr: FakePr) => s.nativeQueues?.[pr.base] ?? (pr.mergeQueue ? 1 : null);
+const queueId = (pr: FakePr) => "MQ_" + pr.base;
 const squash = (pr: FakePr) => {
   const tree = git("merge-tree", "--write-tree", pr.base, pr.head);
   if (!tree.ok) process.exit(1);
@@ -23,9 +26,33 @@ const squash = (pr: FakePr) => {
 if (args[0] === "--version") out("gh 0.0.0-fake");
 else if (args[0] === "auth") process.exit(0);
 else if (args[0] === "api" && args[1] === "graphql") {
-  const id = args.find((arg) => arg.startsWith("id=PR_"))?.slice("id=PR_".length);
+  const id = arg("id")?.replace(/^PR_/, "");
   const pr = id ? s.prs?.[id] : null;
   if (!pr || pr.queueReadError) process.exit(1);
+  const head = git("rev-parse", pr.head).out;
+  const capacity = queueCapacity(pr);
+  if (arg("query")?.startsWith("mutation")) {
+    s.calls.push({ cmd: "gh enqueuePullRequest", arg: { n: id, head: arg("head") } });
+    if (arg("head") !== head || capacity === null || capacity <= 0 || pr.state !== "OPEN" || pr.checks !== "pass" || pr.mergeQueue === "queued") {
+      save(s);
+      process.exit(1);
+    }
+    pr.mergeQueue = "queued";
+    save(s);
+    out({ data: { enqueuePullRequest: { mergeQueueEntry: { id: "MQE_" + id } } } });
+    process.exit(0);
+  }
+  if (arg("base")) {
+    out({
+      state: pr.state,
+      baseRefName: pr.base,
+      headRefOid: head,
+      repository: {
+        mergeQueue: capacity === null ? null : { id: queueId(pr), configuration: { maximumEntriesToBuild: capacity } },
+      },
+    });
+    process.exit(0);
+  }
   if (pr.mergeQueue === "queued" && pr.mergeAfterPolls && --pr.mergeAfterPolls === 0) {
     squash(pr);
     delete pr.mergeQueue;
@@ -34,7 +61,7 @@ else if (args[0] === "api" && args[1] === "graphql") {
   out({
     state: pr.state,
     mergeCommit: pr.sha ? { oid: pr.sha } : null,
-    mergeQueueEntry: pr.mergeQueue === "queued" ? { id: "MQ_" + id } : null,
+    mergeQueueEntry: pr.mergeQueue === "queued" ? { id: "MQE_" + id, mergeQueue: { id: queueId(pr) } } : null,
     autoMergeRequest: pr.autoMerge ? { enabledAt: "2026-11-26T00:00:00Z" } : null,
   });
 } else if (args[0] === "pr") {
@@ -48,6 +75,7 @@ else if (args[0] === "api" && args[1] === "graphql") {
     out({
       id: "PR_" + n,
       url: "https://github.com/test/repo/pull/" + n,
+      headRefOid: git("rev-parse", pr.head).out,
       state: pr.state,
       mergeCommit: pr.sha ? { oid: pr.sha } : null,
       mergeable: conflict ? "CONFLICTING" : "MERGEABLE",
@@ -57,7 +85,7 @@ else if (args[0] === "api" && args[1] === "graphql") {
     });
   } else if (sub === "merge") {
     if (pr.state !== "OPEN" || pr.checks !== "pass") process.exit(1);
-    if (pr.mergeQueue) {
+    if (queueCapacity(pr) !== null) {
       pr.mergeQueue = "queued";
       save(s);
       process.exit(0);

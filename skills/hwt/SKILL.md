@@ -61,9 +61,9 @@ hwt task done|drop <id> [--why "…"]
 
 **Naming**: call working sessions "worktree (title)", e.g. `feat-t14-slot-edit (T14 edit slot)`; never by terminal or session id. Their terminals carry the label `hwt.worktree=<worktree>`.
 
-**Merge queue** — a real queue in the ledger, drained by `hwt mq run`. One runner per repo (a lease), one merge at a time across all mains; it takes every main's items and tells each item's main what needs it.
+**Merge queue** — a queue in the ledger, drained by `hwt mq run`. One runner per repo processes every main's items and tells each owner what needs attention.
 ```sh
-hwt mq run [--watch] [--interval S] [--timeout S]   # drain the queue; --watch keeps polling CI until the line is empty
+hwt mq run [--watch] [--interval S] [--timeout S]   # --watch keeps checking CI and GitHub queue status
 hwt mq run --dry-run          # what it would do for each item, changing nothing
 hwt mq ls [--all] / mq next   # place in line, owner, blocked_by, checks; next = your next item and its plan
 hwt mq approve <id>           # the person said yes (waiting_user → queued)
@@ -71,6 +71,7 @@ hwt mq prio <id> <n> / mq drop <id> / mq log <id>   # reorder (higher first), ta
 hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --force (the person's override)
 ```
 - Order: priority, then place in line. A branch queued again after a return keeps its place. `mq add --after b1,b2` waits for those branches to merge
+- While a PR waits in GitHub's queue, the runner checks the rest of the list and sends approval requests. It submits eligible independent PRs up to each GitHub queue's reported build limit. Direct merges and branch updates wait for in-flight PRs. Repos with `mergeQueue.verify` or `mergeQueue.gc` submit one PR at a time.
 - Per item the runner plans one step: **merge** (CI passed, approval auto or approved) → `gh pr merge --squash` (`mergeQueue.method`) → deploy check (`mergeQueue.verify`) → cleanup: `hwt rm -D --kill-agents`, remote branch deleted, the repo's gc (`mergeQueue.gc`), main checkout fast-forwarded, the task `done`. **update** (behind base, no conflict) → `gh pr update-branch`, wait for CI again (up to `maxUpdates`, then return). **wait** (CI running) / **blocked** (`after`). **ask** (mergeApproval path or lines, a `note` on the branch, branch protection) → `waiting_user` + `[merge approval]` in the owning main's inbox. **return** (conflict, CI failed, dirty, unpushed, no PR) → `returned` + `[rebase request]`/`[merge returned]` to the working session (its main: a log line)
 - Deploy check failed → `failed`, worktree kept, log sent to the working session; fix in the same worktree and `mq add` again
 - A worktree whose session is a main of its own isn't removed on cleanup
