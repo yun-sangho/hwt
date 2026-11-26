@@ -1,6 +1,7 @@
 // Words hwt puts in front of agents and people: the instructions appended to a working session's task,
 // message tags, and the session-start briefings. English by default; `"lang": "ko"` in .hwt.json (or
 // HWT_LANG / the user config) switches to Korean.
+import { realpathSync } from "node:fs";
 import type { Lang } from "./config.ts";
 
 export interface Messages {
@@ -139,11 +140,24 @@ export function messages(lang: Lang): Messages {
   return lang === "ko" ? ko : en;
 }
 
-/** How an agent should invoke this hwt: HWT_SELF, the compiled binary, or `bun <cli.ts>` in development. */
+/**
+ * How an agent should invoke this hwt: HWT_SELF, else the `hwt` on PATH when it is this binary (a stable path
+ * such as Homebrew's /opt/homebrew/bin/hwt, not the versioned Cellar path an upgrade deletes), else this binary,
+ * or `bun <cli.ts>` in development. Agents keep the path in their instructions for as long as they run.
+ */
 export function selfCommand(): string {
   if (process.env.HWT_SELF) return process.env.HWT_SELF;
   const exe = process.execPath;
-  if (!/\/bun(-\w+)?$/.test(exe)) return exe;
   const onPath = Bun.which("hwt");
+  if (!/\/bun(-\w+)?$/.test(exe)) {
+    const real = (p: string) => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
+    return onPath && real(onPath) === real(exe) ? onPath : exe;
+  }
   return onPath ?? `${exe} ${process.argv[1]}`;
 }

@@ -46,12 +46,6 @@ bun install && bun run build      # → dist/hwt
 cp dist/hwt ~/.local/bin/
 ```
 
-Optional shell wrapper, so `hwt rm` run from inside the removed checkout drops you in the main one:
-
-```sh
-eval "$(hwt shell-init zsh)"      # or bash / fish
-```
-
 ## Repo setup
 
 ```sh
@@ -118,7 +112,11 @@ hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]
 hwt mq approve <id> | drop <id> | prio <id> <n> | set <id> <state> [--why T] [--force]
 ```
 
-Setup: `hwt init`, `hwt doctor`, `hwt shell-init`, `hwt hook session-start`.
+Setup: `hwt init`, `hwt doctor`, `hwt install` / `uninstall`, `hwt hook session-start`.
+
+Optional, only without the main-session workflow (there `hwt rm` runs in the main checkout): run in
+the checkout it removes, `hwt rm` leaves your shell in a deleted folder. `eval "$(hwt shell-init zsh)"`
+(or bash / fish) in your shell's rc file adds a wrapper that moves you to the main checkout instead.
 
 stdout is JSON; progress goes to stderr.
 
@@ -135,10 +133,21 @@ handles session ids, so a lost session can be reopened with `hwt new <branch> --
 
 ## Agent integration
 
-- Claude Code: copy `skills/hwt/SKILL.md` to `~/.claude/skills/hwt/` and add a SessionStart hook running
-  `hwt hook session-start`. In a main-session repo it claims each session in the main checkout as a main,
-  and tells each new session whether it is a main or a working session and what of the ledger is its own.
-- Other agents: point them at the same SKILL.md from their instructions file.
+```sh
+hwt install claude --lang ko     # or en; claude | codex | all
+hwt install all --dry-run        # show what would change
+hwt uninstall claude
+```
+
+- **Claude Code**: writes the skill to `~/.claude/skills/hwt/SKILL.md` and adds a SessionStart hook running
+  `hwt hook session-start` to `~/.claude/settings.json` (other settings are kept; the old file is saved as
+  `settings.json.hwt-backup`). In a main-session repo the hook claims each session in the main checkout as a
+  main, and tells each new session whether it is a main or a working session and what of the ledger is its own.
+- **Codex**: writes the skill to `~/.codex/skills/hwt/SKILL.md` and a marked block to `~/.codex/AGENTS.md`.
+  Codex has no session-start hook, so the block tells it to run `hwt hook session-start` itself. Your own
+  text in AGENTS.md is left alone; only the block between the `hwt:begin` / `hwt:end` markers is managed.
+- Running it again is safe; it changes only what differs. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured.
+  `hwt doctor` reports whether both are installed.
 
 ## Development
 
@@ -147,3 +156,8 @@ bun test           # end-to-end tests with fake herdr-app / hc on PATH
 bun run typecheck
 bun run build      # or: bun scripts/build.ts --all
 ```
+
+Releasing: bump `version` in package.json and push to main. `auto-tag` tags `v<version>`, and `release`
+builds the binaries, publishes the GitHub release and bumps `Formula/hwt.rb` in the tap (with the
+`TAP_TOKEN` secret; without it the job warns and the tap is updated by hand with
+`bun scripts/brew-formula.ts <version>`).

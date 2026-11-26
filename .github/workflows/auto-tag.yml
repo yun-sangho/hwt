@@ -1,0 +1,52 @@
+name: auto-tag
+
+# Bump "version" in package.json and push to main: this tags v<version> and starts the release.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # push the tag
+  actions: write    # start release.yml
+
+concurrency:
+  group: auto-tag-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Tag missing?
+        id: check
+        run: |
+          TAG="v$(jq -r .version package.json)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG exists — nothing to do."
+            echo "create=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "create=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push the tag
+        if: steps.check.outputs.create == 'true'
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "hwt ${TAG#v}"
+          git push origin "$TAG"
+
+      # A tag pushed with GITHUB_TOKEN doesn't trigger other workflows, so start the release explicitly.
+      - name: Start the release
+        if: steps.check.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: gh workflow run release.yml -f tag="$TAG"
