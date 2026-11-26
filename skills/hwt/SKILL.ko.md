@@ -44,10 +44,10 @@ hwt send <worktree> "…"       # 내 작업 세션에게. 지금 터미널 ID �
 
 **태스크** — 사용자가 요청한 것과 모든 `[작업 제안]` 은 장부에 넣고 메인이 판단한다.
 ```sh
-hwt task add "<번호> <제목>" --touches path1,path2 [--detail "…"]
+hwt task add "<제목>" --touches path1,path2 [--detail "…"]
 hwt task ls [--all] [--every-main]  # 내 것. overlaps: 어느 메인 것이든 같은 경로를 건드리는 실행 중 브랜치
 hwt task decide <id> now|later|after:<branch> --why "…"
-hwt new <branch> --title "<번호> 짧은 제목" --task "<지시>" --task-id <id>   # → running
+hwt new <branch> --title "<짧은 제목>" --task "<지시>" --task-id <id>   # → running
 hwt task done|drop <id> [--why "…"]
 ```
 - `now`: 겹치는 것이 없고 다른 결과에 기대지 않는다
@@ -58,7 +58,7 @@ hwt task done|drop <id> [--why "…"]
 
 **지시(`--task`)**: 범위, 완료 기준, 확인 명령, 그리고 "push 하고 PR 을 연 뒤 `hwt mq add --pr <n>` 하고 머지될 때까지 남아 있기". 보고 방법(`hwt tell`, 결정이 필요할 때만)은 hwt 가 덧붙인다.
 
-**부르는 이름**: 작업 세션은 "worktree (제목)" 으로 부른다. 예: `feat-t14-slot-edit (T14 슬롯 수정)`. 터미널·세션 ID 로 부르지 않는다. 그 터미널에는 `hwt.worktree=<worktree>` 라벨이 있다.
+**부르는 이름**: 작업 세션은 "worktree (제목)" 으로 부른다. 예: `feat-slot-edit (슬롯 수정)`. 제목은 말로만 쓰고 직접 지은 번호("T14 …")를 붙이지 않는다. 태스크 ID 가 아니고, 재시작이나 다른 메인에서는 이어지지 않으며, 겹친다. 태스크와의 연결은 `--task-id` 로 한다. 터미널·세션 ID 로 부르지 않는다. 그 터미널에는 `hwt.worktree=<worktree>` 라벨이 있다.
 
 **머지 큐** — 장부에 기록하며 `hwt mq run`으로 처리한다. 레포마다 러너 하나가 모든 메인의 항목을 처리하고, 대응이 필요한 항목은 주인 메인에게 알린다.
 ```sh
@@ -95,7 +95,7 @@ hwt mq add --pr <n> "요약"    # push 하고 PR 을 연 뒤. 머지될 때까�
 ## hwt new
 
 ```sh
-hwt new feat/x --title "T3 로그인 수정" --task "<지시>" [--task-id <id>]
+hwt new feat/x --title "로그인 수정" --task "<지시>" [--task-id <id>]
 hwt new feat/x --agent codex --task "…"
 hwt new feat/x --resume-from <session id> [--fork]   # 재시작 뒤 에이전트 없이 스페이스만 열려 있어도 된다
 hwt new feat/x --agent none        # 셸만

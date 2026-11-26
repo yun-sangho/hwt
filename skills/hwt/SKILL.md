@@ -45,10 +45,10 @@ hwt send <worktree> "…"       # to one of your working sessions, whatever its 
 
 **Tasks** — everything the person asks for and every `[task proposal]` goes in the ledger; the main decides.
 ```sh
-hwt task add "<no> <title>" --touches path1,path2 [--detail "…"]
+hwt task add "<title>" --touches path1,path2 [--detail "…"]
 hwt task ls [--all] [--every-main]  # yours; overlaps: running branches of any main touching the same paths
 hwt task decide <id> now|later|after:<branch> --why "…"
-hwt new <branch> --title "<no> short title" --task "<instructions>" --task-id <id>   # → running
+hwt new <branch> --title "<short title>" --task "<instructions>" --task-id <id>   # → running
 hwt task done|drop <id> [--why "…"]
 ```
 - `now`: no overlap, no dependency on other results
@@ -59,7 +59,7 @@ hwt task done|drop <id> [--why "…"]
 
 **Instructions (`--task`)**: scope, done criteria, verification commands, and "push, open a PR, run `hwt mq add --pr <n>` and stay up until it is merged". hwt appends how to report (`hwt tell`, only for decisions) itself.
 
-**Naming**: call working sessions "worktree (title)", e.g. `feat-t14-slot-edit (T14 edit slot)`; never by terminal or session id. Their terminals carry the label `hwt.worktree=<worktree>`.
+**Naming**: call working sessions "worktree (title)", e.g. `feat-slot-edit (edit slot)`; never by terminal or session id. Titles are plain words: no numbers of your own ("T14 …"). They aren't the task's id, don't survive a restart or another main, and collide; the task is linked by `--task-id`. Their terminals carry the label `hwt.worktree=<worktree>`.
 
 **Merge queue** — a queue in the ledger, drained by `hwt mq run`. One runner per repo processes every main's items and tells each owner what needs attention.
 ```sh
@@ -96,7 +96,7 @@ hwt mq add --pr <n> "summary" # after pushing and opening the PR; stay up until 
 ## hwt new
 
 ```sh
-hwt new feat/x --title "T3 login fix" --task "<instructions>" [--task-id <id>]
+hwt new feat/x --title "login fix" --task "<instructions>" [--task-id <id>]
 hwt new feat/x --agent codex --task "…"
 hwt new feat/x --resume-from <session id> [--fork]   # also after a restart that left its space open with no agent
 hwt new feat/x --agent none        # just a shell
