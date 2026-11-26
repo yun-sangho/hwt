@@ -495,10 +495,12 @@ export function* previewQueue(main: string, l: Ledger, observed?: PendingMerges)
     }
     const checks = mqChecks(main, x, l);
     const step = schedule(main, x, checks, l, cfg, pending);
-    if (step.act === "enqueue") {
-      pending.set(x.id, { kind: "native", queue: step.admission.queue, why: "scheduled for the GitHub merge queue" });
-      yield { ...row, step: { act: "enqueue" }, checks };
-    } else yield { ...row, step, checks };
+    yield { ...row, step: step.act === "enqueue" ? { act: "enqueue" } : step, checks };
+    if (step.act !== "enqueue" && step.act !== "merge") continue;
+    const admission = step.act === "enqueue" ? step.admission : nativeAdmission(main, checks);
+    if (admission) {
+      pending.set(x.id, { kind: "native", queue: admission.queue, why: "scheduled for the GitHub merge queue" });
+    }
   }
 }
 

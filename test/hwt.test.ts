@@ -533,6 +533,16 @@ describe("merge queue runner", () => {
     expect([first, second, third].every(existsSync)).toBe(true);
   });
 
+  test("dry-run reserves capacity for the initial native queue submission", () => {
+    work("feat/first", 1);
+    work("feat/second", 2);
+    setFake((s) => { s.nativeQueues = { main: 1 }; });
+
+    expect(run("--dry-run").waiting.map((x: { step: { act: string } }) => x.step.act)).toEqual(["merge", "wait"]);
+    expect(fake().calls.filter((c) => c.cmd === "gh pr merge" || c.cmd === "gh enqueuePullRequest")).toEqual([]);
+    expect(run().waiting.map((x: { state: string }) => x.state)).toEqual(["merging", "queued"]);
+  });
+
   test("checks later native queues while the first GitHub entry is pending", () => {
     expect(sh(["git", "push", "-q", "origin", "main:release"]).code).toBe(0);
     const first = work("feat/first", 1);
