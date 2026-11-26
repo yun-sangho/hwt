@@ -19,7 +19,8 @@ On top of that, hwt has an optional **main-session workflow**: main sessions tal
 list, hand work to agents in worktrees, and merge their PRs one at a time. There can be several mains, each
 owning the worktrees it made: by default every agent in the main checkout is one, and a working session can
 become a main of its own with `hwt claim` in its worktree. State lives in a ledger under `.git/hwt/`, so a
-restarted session picks up where the last one stopped.
+restarted session picks up where the last one stopped. Writes take a lock and keep the ledger they replace as
+`ledger.json.bak`; a ledger hwt can't read stops the command rather than being read, and overwritten, as empty.
 
 Mains are woken only for decisions (merge approvals, task proposals, unblocked tasks, a working session's
 `hwt tell`); merge requests, returns and deploy failures are log entries (`hwt inbox --log`). The PR, its

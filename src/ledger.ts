@@ -1,16 +1,16 @@
 // Main-session state, kept in <git common dir>/hwt/ (a plain folder's: ~/.local/state/hwt/projects/…), shared by
 // every checkout and never committed:
-//   ledger.json  {mains, notes, worktrees, tasks, merges}   rewritten under a lock
+//   ledger.json  {mains, notes, worktrees, tasks, merges}   rewritten under a lock (the one before: ledger.json.bak)
 //   inbox.jsonl  one line per `hwt tell` (worker → its main), appended, never rewritten
 //   acked        ids a main session has handled, one per line
 // A repo can have several main sessions. Each owns the worktrees it made (worktree.owner = its id), and the
 // tasks, notes, inbox messages and merge requests that come with them. Records with no owner (made before
 // there were owners, or by no session at all) belong to every main.
 // The format is the one the original zsh hwt wrote, so both can read the same ledger.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stateDirFor } from "./project.ts";
-import { sleepMs, warn } from "./util.ts";
+import { die, shQuote, sleepMs } from "./util.ts";
 
 /** A main session. Its id is its agent session id, else its hc terminal (see mainId). */
 export interface MainRecord {
@@ -161,48 +161,72 @@ export function stateDir(main: string, create = true): string {
   return stateDirFor(main, create);
 }
 
+/**
+ * The ledger as written, or an empty one when there is none yet. A ledger that is there but can't be read stops
+ * the command: reading it as empty would let the next write replace every note, task and merge with nothing.
+ */
 export function readLedger(main: string): Ledger {
   const f = join(stateDir(main, false), "ledger.json");
   if (!existsSync(f)) return empty();
+  let v: unknown;
   try {
-    return { ...empty(), ...(JSON.parse(readFileSync(f, "utf8")) as Ledger) };
-  } catch {
-    warn(`can't parse ${f}; reading it as empty`);
-    return empty();
+    v = JSON.parse(readFileSync(f, "utf8"));
+  } catch (e) {
+    unreadable(f, (e as Error).message);
   }
+  if (!v || typeof v !== "object" || Array.isArray(v)) unreadable(f, "not a JSON object");
+  return { ...empty(), ...(v as Ledger) };
 }
 
-/** Lock (mkdir, atomic on every filesystem), read, change, write a temp file, rename, unlock. */
+function unreadable(f: string, why: string): never {
+  const bak = f + ".bak";
+  die(
+    `can't read ${f} (${why}); hwt leaves it as it is.\n` +
+      (existsSync(bak) ? `  the copy from before the last write: cp ${shQuote(bak)} ${shQuote(f)}\n` : "") +
+      "  or fix the JSON by hand",
+  );
+}
+
+/** How long a write waits for the lock. A lock older than STALE_MS is a crashed hwt's and is taken over. */
+const STALE_MS = 30_000;
+const lockWaitMs = () => Number(process.env.HWT_LOCK_WAIT_MS) || STALE_MS + 5_000;
+
+/**
+ * Lock (mkdir, atomic on every filesystem), read, change, write a temp file, rename, unlock. The ledger it
+ * replaces is kept as ledger.json.bak. No lock, no write: two writers would each drop the other's change.
+ */
 export function updateLedger(main: string, change: (l: Ledger) => void): Ledger {
   const d = stateDir(main);
   const lock = join(d, "lock");
+  const until = Date.now() + lockWaitMs();
   let locked = false;
-  for (let i = 0; i < 100 && !locked; i++) {
+  while (!locked) {
     try {
       mkdirSync(lock);
       locked = true;
     } catch {
-      // A lock left by a crashed hwt: older than 30 s is stale.
       try {
-        if (Date.now() - statSync(lock).mtimeMs > 30_000) rmdirSync(lock);
+        if (Date.now() - statSync(lock).mtimeMs > STALE_MS) rmdirSync(lock);
       } catch {}
+      if (Date.now() >= until) {
+        die(`the ledger is locked (${lock}); another hwt is writing it. Try again, or remove that folder if no hwt is running`);
+      }
       sleepMs(100);
     }
   }
-  if (!locked) warn("ledger lock busy for 10 s; writing anyway");
   try {
     const l = readLedger(main);
     change(l);
     const f = join(d, "ledger.json");
-    writeFileSync(f + ".tmp", JSON.stringify(l, null, 2) + "\n");
-    renameSync(f + ".tmp", f);
+    const tmp = `${f}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(l, null, 2) + "\n");
+    if (existsSync(f)) copyFileSync(f, f + ".bak");
+    renameSync(tmp, f);
     return l;
   } finally {
-    if (locked) {
-      try {
-        rmdirSync(lock);
-      } catch {}
-    }
+    try {
+      rmdirSync(lock);
+    } catch {}
   }
 }
 
