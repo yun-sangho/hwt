@@ -29,6 +29,9 @@ export interface FakePr {
   state: "OPEN" | "MERGED" | "CLOSED";
   checks: "pass" | "fail" | "pending" | "none";
   mergeQueue?: "required" | "queued";
+  autoMerge?: boolean;
+  mergeAfterPolls?: number;
+  queueReadError?: boolean;
   sha?: string;
 }
 

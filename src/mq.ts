@@ -15,7 +15,7 @@ import * as herdr from "./herdr.ts";
 import { readLedger, updateLedger, type Ledger, type Merge, type MergeState, type MqLease } from "./ledger.ts";
 import { messages } from "./messages.ts";
 import { notifyMain, ownerOf } from "./session.ts";
-import { die, has, run, sleepMs, stamp, warn } from "./util.ts";
+import { die, has, run, sleepMs, stamp, warn, type RunResult } from "./util.ts";
 
 // ---- States -------------------------------------------------------------------------------
 
@@ -24,8 +24,8 @@ export const MOVES: Record<MergeState, MergeState[]> = {
   updating: ["queued", "waiting_user", "merging", "verifying", "returned", "dropped"],
   waiting_user: ["queued", "returned", "dropped"],
   merging: ["verifying", "queued", "returned"],
-  verifying: ["cleaning", "done", "failed"],
-  cleaning: ["done"],
+  verifying: ["cleaning", "done", "failed", "returned"],
+  cleaning: ["verifying", "done", "returned"],
   returned: ["queued", "dropped"],
   // A person may fix a failed deploy by hand and call it done.
   failed: ["queued", "done", "dropped"],
@@ -133,6 +133,56 @@ export function prInfo(main: string, pr: number): PrInfo | null {
   } catch {
     return null;
   }
+}
+
+type MergeStatus =
+  | { kind: "merged"; sha: string }
+  | { kind: "closed" | "open" | "pending" | "unknown" };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readGhJson(main: string, args: string[]): Record<string, unknown> | null {
+  const result = run(["gh", ...args], { cwd: main });
+  if (!result.ok) return null;
+  try {
+    const value: unknown = JSON.parse(result.out);
+    return isObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeState(pr: Record<string, unknown> | null): MergeStatus {
+  if (pr?.state === "CLOSED") return { kind: "closed" };
+  if (pr?.state === "OPEN") return { kind: "open" };
+  if (pr?.state === "MERGED" && isObject(pr.mergeCommit) && typeof pr.mergeCommit.oid === "string" && pr.mergeCommit.oid) {
+    return { kind: "merged", sha: pr.mergeCommit.oid };
+  }
+  return { kind: "unknown" };
+}
+
+function mergeStatus(main: string, number: number | null): MergeStatus {
+  if (number === null) return { kind: "unknown" };
+  const pr = readGhJson(main, ["pr", "view", String(number), "--json", "state,mergeCommit,id,url"]);
+  if (!pr) return { kind: "unknown" };
+  const state = mergeState(pr);
+  if (state.kind !== "open") return state;
+  const url = typeof pr.url === "string" ? URL.parse(pr.url) : null;
+  if (!url?.hostname || typeof pr.id !== "string") return { kind: "unknown" };
+
+  const current = readGhJson(main, [
+    "api", "graphql", "--hostname", url.hostname, "-f", `id=${pr.id}`,
+    "-f", "query=query($id:ID!){node(id:$id){...on PullRequest{state mergeCommit{oid} mergeQueueEntry{id} autoMergeRequest{enabledAt}}}}",
+    "--jq", ".data.node",
+  ]);
+  const observed = mergeState(current);
+  if (observed.kind !== "open" || !current) return observed;
+  if (current.mergeQueueEntry === null && current.autoMergeRequest === null) return observed;
+  if (isObject(current.mergeQueueEntry) && typeof current.mergeQueueEntry.id === "string") return { kind: "pending" };
+  if (isObject(current.autoMergeRequest) && typeof current.autoMergeRequest.enabledAt === "string") return { kind: "pending" };
+  return { kind: "unknown" };
 }
 
 const hasRef = (main: string, ref: string) => git(["show-ref", "--verify", "--quiet", ref], main).ok;
@@ -309,6 +359,8 @@ export interface RunReport {
   dry_run?: boolean;
 }
 
+type Progress = "next" | "restart" | { id: string; why: string };
+
 export const queueConfig = (main: string): Required<Pick<MergeQueueConfig, "method" | "verifyTimeout" | "cleanup" | "maxUpdates" | "requireChecks">> & MergeQueueConfig => ({
   method: "squash",
   verifyTimeout: 1800,
@@ -357,32 +409,35 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     if (hasOrigin(main)) run(["git", "fetch", "-q", "--prune", "origin"], { cwd: main });
   };
 
-  /** Merged: run the deploy check, then clean up. Returns false when the check failed. */
-  const finish = (id: string): boolean => {
-    const x = readLedger(main).merges?.find((y) => y.id === id);
-    if (!x) return false;
-    if (x.state === "merging") moveItem(id, "verifying", null);
-    if (x.state === "merging" || x.state === "verifying") {
-      if (cfg.verify) {
-        const r = Bun.spawnSync({
-          cmd: ["sh", "-c", cfg.verify],
-          cwd: main,
-          env: { ...process.env, HWT_MQ_ID: id, HWT_MQ_BRANCH: x.branch, HWT_MQ_PR: String(x.pr ?? ""), HWT_MQ_SHA: x.sha ?? "" },
-          stdout: "pipe",
-          stderr: "pipe",
-          timeout: cfg.verifyTimeout * 1000,
-        });
-        if (r.exitCode !== 0) {
-          const log = tail(`${r.stdout.toString()}\n${r.stderr.toString()}`);
-          const why = `deploy check failed (exit ${r.exitCode ?? "timeout"})`;
-          moveItem(id, "failed", why);
-          giveBack(x, `${m.tags.deployFailed} ${id} ${x.branch}: ${why}\n${log}`);
-          return false;
-        }
-      }
-      moveItem(id, cfg.cleanup ? "cleaning" : "done", null);
+  const finish = (x: Merge, sha: string, why: string | null): void => {
+    const { id } = x;
+    const verified = x.state === "cleaning" && x.sha === sha;
+    if (!verified && (x.state !== "verifying" || x.sha !== sha)) {
+      moveItem(id, "verifying", why, (y) => { y.sha = sha; });
+      if (x.state !== "verifying" && x.state !== "cleaning") report.merged.push(x.branch);
     }
-    if (!cfg.cleanup) return true;
+    if (!verified && cfg.verify) {
+      const r = Bun.spawnSync({
+        cmd: ["sh", "-c", cfg.verify],
+        cwd: main,
+        env: { ...process.env, HWT_MQ_ID: id, HWT_MQ_BRANCH: x.branch, HWT_MQ_PR: String(x.pr ?? ""), HWT_MQ_SHA: sha },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: cfg.verifyTimeout * 1000,
+      });
+      if (r.exitCode !== 0) {
+        const log = tail(`${r.stdout.toString()}\n${r.stderr.toString()}`);
+        const why = `deploy check failed (exit ${r.exitCode ?? "timeout"})`;
+        moveItem(id, "failed", why);
+        giveBack(x, `${m.tags.deployFailed} ${id} ${x.branch}: ${why}\n${log}`);
+        return;
+      }
+    }
+    if (!cfg.cleanup) {
+      moveItem(id, "done", null);
+      return;
+    }
+    if (!verified) moveItem(id, "cleaning", null);
     const l = readLedger(main);
     const notes: string[] = [];
     const w = l.worktrees[x.branch];
@@ -417,51 +472,63 @@ export function runQueue(main: string, o: RunOptions): RunReport {
       notifyMain(main, t.owner!, { branch: x.branch, path: main, text: `${m.tags.unblocked} ${t.id} ${t.title} (after:${x.branch} merged)`, wake: true });
     }
     moveItem(id, "done", notes.join("; ") || null);
-    return true;
   };
 
-  /** One item in line: plan and do its step. Returns true when it merged (the base moved: start over). */
-  const step = (x: Merge, s: Step): boolean => {
+  const giveBackMerge = (x: Merge, why: string, rebase = false) => {
+    moveItem(x.id, "returned", why);
+    giveBack(x, `${rebase ? m.tags.rebaseRequest : m.tags.returned} ${x.id} ${x.branch}: ${why}. ${m.requeue}`);
+  };
+
+  const reconcile = (x: Merge, submit?: RunResult): Progress => {
+    const status = mergeStatus(main, x.pr);
+    switch (status.kind) {
+      case "merged":
+        finish(x, status.sha, null);
+        return "restart";
+      case "pending":
+        return { id: x.id, why: "waiting for the GitHub merge queue or auto-merge" };
+      case "unknown":
+        return { id: x.id, why: "can't confirm PR merge status (gh)" };
+      case "closed":
+        giveBackMerge(x, "PR closed before merging");
+        return "next";
+      case "open":
+        if (submit?.ok) return { id: x.id, why: "waiting for GitHub to confirm the merge request" };
+        if (submit) moveItem(x.id, "queued", `gh pr merge failed: ${tail(submit.err || submit.out, 3)}`);
+        else giveBackMerge(x, "PR is open with no pending GitHub merge request");
+        return "next";
+    }
+  };
+
+  const step = (x: Merge, s: Step): Progress => {
     switch (s.act) {
       case "merge": {
         moveItem(x.id, "merging", null);
         const r = run(["gh", "pr", "merge", String(x.pr), `--${cfg.method}`], { cwd: main });
-        const after = prInfo(main, x.pr!);
-        if (!r.ok && after?.state !== "MERGED") {
-          // A race (the base moved, a check just failed): back in line, the next pass looks again.
-          moveItem(x.id, "queued", `gh pr merge failed: ${tail(r.err || r.out, 3)}`);
-          return false;
-        }
-        const sha = runOut(["gh", "pr", "view", String(x.pr), "--json", "mergeCommit", "--jq", ".mergeCommit.oid"], main);
-        moveItem(x.id, "verifying", null, (y) => {
-          if (sha) y.sha = sha;
-        });
-        report.merged.push(x.branch);
-        finish(x.id);
-        return true;
+        return reconcile(x, r);
       }
-      case "merged_elsewhere":
-        moveItem(x.id, "verifying", "merged outside the queue");
-        report.merged.push(x.branch);
-        finish(x.id);
-        return true;
+      case "merged_elsewhere": {
+        const status = mergeStatus(main, x.pr);
+        if (status.kind !== "merged") return { id: x.id, why: "can't confirm PR merge status (gh)" };
+        finish(x, status.sha, "merged outside the queue");
+        return "restart";
+      }
       case "update": {
         const r = run(["gh", "pr", "update-branch", String(x.pr)], { cwd: main });
         if (!r.ok) {
           moveItem(x.id, "returned", `gh pr update-branch failed: ${tail(r.err || r.out, 3)}`);
           giveBack(x, `${m.tags.rebaseRequest} ${x.id} ${x.branch}: ${s.why}; couldn't update it here, rebase and push, then hwt mq add again`);
-          return false;
+          return "next";
         }
         moveItem(x.id, "updating", s.why, (y) => {
           y.updates = (y.updates ?? 0) + 1;
         });
         giveBack(x, `${m.tags.baseUpdated} ${x.id} ${x.branch}: ${m.baseUpdated}`, false);
-        return false;
+        return "next";
       }
       case "return":
-        moveItem(x.id, "returned", s.why);
-        giveBack(x, `${s.rebase ? m.tags.rebaseRequest : m.tags.returned} ${x.id} ${x.branch}: ${s.why}. ${m.requeue}`);
-        return false;
+        giveBackMerge(x, s.why, s.rebase);
+        return "next";
       case "ask":
         if (x.state !== "waiting_user") {
           moveItem(x.id, "waiting_user", s.why);
@@ -470,35 +537,28 @@ export function runQueue(main: string, o: RunOptions): RunReport {
           if (owner) notifyMain(main, owner, { branch: x.branch, path: x.path, text, wake: true });
           else warn(text);
         }
-        return false;
+        return "next";
       case "drop":
         moveItem(x.id, "dropped", s.why);
-        return false;
+        return "next";
       case "wait":
       case "blocked":
         // Stays in line. updating → queued once CI has picked the update up is not needed: plan reads CI.
-        return false;
+        return "next";
     }
   };
 
   /** One pass over the line: in-flight items first (a crashed runner left them), then in order. */
-  const pass = (): boolean => {
+  const pass = (): Progress => {
     fetch();
     let l = readLedger(main);
     for (const x of ordered(l).filter((y) => IN_FLIGHT.includes(y.state))) {
       if (o.dryRun) {
         report.waiting.push({ id: x.id, branch: x.branch, state: x.state, step: { act: "wait", why: `${x.state}: resumes here` } });
-        return false;
+        return "next";
       }
-      if (x.state === "merging") {
-        const p = x.pr ? prInfo(main, x.pr) : null;
-        if (p?.state !== "MERGED") {
-          moveItem(x.id, "queued", "merge didn't finish; back in line");
-          continue;
-        }
-      }
-      finish(x.id);
-      return true;
+      const progress = reconcile(x);
+      if (progress !== "next") return progress;
     }
     l = readLedger(main);
     for (const x of ordered(l).filter((y) => y.state === "queued" || y.state === "updating" || y.state === "waiting_user")) {
@@ -509,25 +569,25 @@ export function runQueue(main: string, o: RunOptions): RunReport {
         report.waiting.push({ id: x.id, branch: x.branch, state: x.state, step: s });
         continue;
       }
-      if (step(x, s)) return true;
+      const progress = step(x, s);
+      if (progress !== "next") return progress;
     }
-    return false;
+    return "next";
   };
 
-  const leftover = () => {
-    if (o.dryRun) return;
+  const leftover = (pending: { id: string; why: string } | null) => {
     fetch();
     const l = readLedger(main);
     report.waiting = ordered(l)
-      .filter((x) => WAITING.includes(x.state))
-      .map((x) => ({
-        id: x.id,
-        branch: x.branch,
-        state: x.state,
-        step: x.state === "waiting_user" && !x.approved
-          ? ({ act: "ask", why: x.why ?? "" } as Step)
-          : plan(x, mqChecks(main, x, l), { maxUpdates: cfg.maxUpdates, requireChecks: cfg.requireChecks, blockedBy: blockedBy(l, x) }),
-      }));
+      .filter((x) => IN_FLIGHT.includes(x.state) || WAITING.includes(x.state))
+      .map((x) => {
+        let next: Step;
+        if (pending?.id === x.id) next = { act: "wait", why: pending.why };
+        else if (IN_FLIGHT.includes(x.state)) next = { act: "wait", why: `${x.state}: resumes here` };
+        else if (x.state === "waiting_user" && !x.approved) next = { act: "ask", why: x.why ?? "" };
+        else next = plan(x, mqChecks(main, x, l), { maxUpdates: cfg.maxUpdates, requireChecks: cfg.requireChecks, blockedBy: blockedBy(l, x) });
+        return { id: x.id, branch: x.branch, state: x.state, step: next };
+      });
   };
 
   if (o.dryRun) {
@@ -535,24 +595,22 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     return report;
   }
   acquireLease(main, o.by);
+  let pending: { id: string; why: string } | null = null;
   try {
     const end = Date.now() + o.timeout * 1000;
     for (;;) {
       beat(main);
-      if (pass()) continue; // merged: the base moved, look at the line again
+      const progress = pass();
+      if (progress === "restart") continue;
+      pending = progress === "next" ? null : progress;
       const l = readLedger(main);
       const inLine = (l.merges ?? []).some((x) => x.state === "queued" || x.state === "updating" || (x.state === "waiting_user" && x.approved));
-      if (!o.watch || !inLine || Date.now() >= end) break;
+      if (!o.watch || (!pending && !inLine) || Date.now() >= end) break;
       sleepMs(Math.min(o.interval * 1000, Math.max(0, end - Date.now())));
     }
   } finally {
     releaseLease(main);
   }
-  leftover();
+  leftover(pending);
   return report;
-}
-
-function runOut(cmd: string[], cwd: string): string | null {
-  const r = run(cmd, { cwd });
-  return r.ok ? r.out.trim() || null : null;
 }

@@ -435,8 +435,15 @@ describe("merge queue runner", () => {
     return wt;
   };
   const originMain = (f: string) => sh(["git", "-C", origin, "show", `main:${f}`]);
+  const originBranch = (branch: string) => sh(["git", "-C", origin, "rev-parse", "--verify", "-q", branch]);
   const run = (...a: string[]) => json(hwt(["mq", "run", ...a], t1));
   const item = (branch: string) => ledger().merges.filter((m: { branch: string; state: string }) => m.branch === branch && m.state !== "dropped").at(-1);
+  const completeNativeMerge = (n: number, branch: string) => {
+    const sha = originBranch(branch).out.trim();
+    expect(sh(["git", "-C", origin, "update-ref", "refs/heads/main", sha]).code).toBe(0);
+    setFake((s) => Object.assign(s.prs![n]!, { state: "MERGED", sha }));
+    return sha;
+  };
 
   beforeEach(() => {
     origin = join(dir, "origin.git");
@@ -486,18 +493,66 @@ describe("merge queue runner", () => {
     ]);
     expect(item("feat/native").state).toBe("merging");
     expect(existsSync(wt)).toBe(true);
-    expect(sh(["git", "-C", origin, "rev-parse", "--verify", "-q", "feat/native"]).code).toBe(0);
+    expect(originBranch("feat/native").code).toBe(0);
     expect(originMain("feat-native").code).not.toBe(0);
 
     expect(run().merged).toEqual([]);
     expect(fake().calls.filter((c) => c.cmd === "gh pr merge")).toHaveLength(1);
 
-    const sha = sh(["git", "-C", origin, "rev-parse", "feat/native"]).out.trim();
-    expect(sh(["git", "-C", origin, "update-ref", "refs/heads/main", sha]).code).toBe(0);
-    setFake((s) => Object.assign(s.prs![1]!, { state: "MERGED", sha }));
+    const sha = completeNativeMerge(1, "feat/native");
     expect(run().merged).toEqual(["feat/native"]);
     expect(item("feat/native")).toMatchObject({ state: "done", sha });
     expect(existsSync(wt)).toBe(false);
+  });
+
+  test("watch polls and finishes when the only item is in the GitHub queue", () => {
+    const wt = work("feat/native", 1);
+    setFake((s) => Object.assign(s.prs![1]!, { mergeQueue: "required", mergeAfterPolls: 2 }));
+
+    expect(run("--watch", "--interval", "0", "--timeout", "10").merged).toEqual(["feat/native"]);
+    expect(originMain("feat-native").code).toBe(0);
+    expect(existsSync(wt)).toBe(false);
+    expect(fake().calls.filter((c) => c.cmd === "gh pr merge")).toHaveLength(1);
+  });
+
+  test("resumes auto-merge, keeps the item on a read failure, and returns it after removal", () => {
+    const wt = work("feat/native", 1);
+    setFake((s) => void (s.prs![1]!.mergeQueue = "required"));
+    expect(run().merged).toEqual([]);
+
+    setFake((s) => {
+      delete s.prs![1]!.mergeQueue;
+      s.prs![1]!.autoMerge = true;
+    });
+    expect(run().waiting[0]).toMatchObject({ state: "merging", step: { act: "wait" } });
+    setFake((s) => void (s.prs![1]!.queueReadError = true));
+    expect(run().waiting[0]).toMatchObject({ state: "merging", step: { act: "wait" } });
+    expect(fake().calls.filter((c) => c.cmd === "gh pr merge")).toHaveLength(1);
+
+    setFake((s) => Object.assign(s.prs![1]!, { autoMerge: false, queueReadError: false }));
+    expect(run().merged).toEqual([]);
+    expect(item("feat/native").state).toBe("returned");
+    expect(existsSync(wt)).toBe(true);
+    expect(originBranch("feat/native").code).toBe(0);
+  });
+
+  test("rechecks legacy cleanup before removing a worktree or trusting deployment verification", () => {
+    config({ mainSession: true, mergeQueue: { verify: 'printf "%s" "$HWT_MQ_SHA" > verified-sha' } });
+    sh(["git", "push", "-q", "origin", "main"]);
+    const open = work("feat/open", 1);
+    const merged = work("feat/merged", 2);
+    for (const branch of ["feat/open", "feat/merged"]) {
+      expect(hwt(["mq", "set", item(branch).id, "cleaning", "--force"], t1).code).toBe(0);
+    }
+    const sha = completeNativeMerge(2, "feat/merged");
+
+    run();
+    expect(item("feat/open").state).toBe("returned");
+    expect(existsSync(open)).toBe(true);
+    expect(originBranch("feat/open").code).toBe(0);
+    expect(item("feat/merged")).toMatchObject({ state: "done", sha });
+    expect(existsSync(merged)).toBe(false);
+    expect(readFileSync(join(repo, "verified-sha"), "utf8")).toBe(sha);
   });
 
   test("priority first; the next one is behind, gets updated, waits for CI, then merges", () => {
