@@ -505,6 +505,17 @@ describe("merge queue runner", () => {
     expect(existsSync(wt)).toBe(false);
   });
 
+  test("a merge request keeps a unique ID when the generated ID collides", () => {
+    const wt = work("feat/collision", 1);
+    const fixedId = join(dir, "fixed-id.ts");
+    writeFileSync(fixedId, "Date.now = () => 1000000; Math.random = () => 0.5;\n");
+    const enqueue = () => json(sh([process.execPath, "--preload", fixedId, CLI, "mq", "add", "--pr", "1"], wt)).merge;
+    const replaced = enqueue();
+    const current = enqueue();
+    expect(current).not.toBe(replaced);
+    expect(json(hwt(["mq", "log", current])).state).toBe("queued");
+  });
+
   test("watch polls and finishes when the only item is in the GitHub queue", () => {
     const wt = work("feat/native", 1);
     setFake((s) => Object.assign(s.prs![1]!, { mergeQueue: "required", mergeAfterPolls: 2 }));
