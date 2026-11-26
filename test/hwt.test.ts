@@ -475,6 +475,31 @@ describe("merge queue runner", () => {
     expect(ledger().mq.lease).toBeNull();
   });
 
+  test("an accepted GitHub merge queue entry preserves the worktree until the PR merges", () => {
+    const wt = work("feat/native", 1);
+    setFake((s) => void (s.prs![1]!.mergeQueue = "required"));
+
+    const pending = run();
+    expect(pending.merged).toEqual([]);
+    expect(pending.waiting).toEqual([
+      { id: item("feat/native").id, branch: "feat/native", state: "merging", step: expect.objectContaining({ act: "wait" }) },
+    ]);
+    expect(item("feat/native").state).toBe("merging");
+    expect(existsSync(wt)).toBe(true);
+    expect(sh(["git", "-C", origin, "rev-parse", "--verify", "-q", "feat/native"]).code).toBe(0);
+    expect(originMain("feat-native").code).not.toBe(0);
+
+    expect(run().merged).toEqual([]);
+    expect(fake().calls.filter((c) => c.cmd === "gh pr merge")).toHaveLength(1);
+
+    const sha = sh(["git", "-C", origin, "rev-parse", "feat/native"]).out.trim();
+    expect(sh(["git", "-C", origin, "update-ref", "refs/heads/main", sha]).code).toBe(0);
+    setFake((s) => Object.assign(s.prs![1]!, { state: "MERGED", sha }));
+    expect(run().merged).toEqual(["feat/native"]);
+    expect(item("feat/native")).toMatchObject({ state: "done", sha });
+    expect(existsSync(wt)).toBe(false);
+  });
+
   test("priority first; the next one is behind, gets updated, waits for CI, then merges", () => {
     const wa = work("feat/a", 1);
     const wb = work("feat/b", 2);

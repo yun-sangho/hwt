@@ -36,6 +36,11 @@ else if (args[0] === "pr") {
     }
   } else if (sub === "merge") {
     if (pr.state !== "OPEN" || pr.checks !== "pass") process.exit(1);
+    if (pr.mergeQueue) {
+      pr.mergeQueue = "queued";
+      save(s);
+      process.exit(0);
+    }
     const tree = git("merge-tree", "--write-tree", pr.base, pr.head);
     if (!tree.ok) process.exit(1);
     const c = git("commit-tree", tree.out.split("\n")[0]!, "-p", pr.base, "-m", `squash ${pr.head}`).out;

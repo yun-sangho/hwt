@@ -28,6 +28,7 @@ export interface FakePr {
   base: string;
   state: "OPEN" | "MERGED" | "CLOSED";
   checks: "pass" | "fail" | "pending" | "none";
+  mergeQueue?: "required" | "queued";
   sha?: string;
 }
 
