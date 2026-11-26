@@ -31,17 +31,19 @@ description: Use when creating or removing git worktrees, or when working the ma
 
 ```sh
 hwt claim                     # at session start (the session-start hook does it in the main checkout); other mains stay mains
-hwt status [--prs]            # one-page restore: mains, your notes/tasks/unread messages, all merges and worktrees (mine: true = yours), PRs
+hwt status [--prs] [--full]   # one-page restore: mains, your notes/tasks/unread messages, all merges and worktrees (mine: true = yours), PRs. Notes on finished branches (notes_hidden) and long task texts are left out; --full shows all
 hwt adopt <worktree>...       # take over a gone main's worktrees (their unread mail comes with them)
 hwt mains [ls]                # every main: live, owns
 hwt mains prune [--release] [--dry-run]   # forget gone mains; ones still owning worktrees stay unless --release (their work becomes unowned)
 hwt note [--branch B] "…"     # record the person's decisions and permissions the moment you get them
-hwt note --drop <n>           # remove a wrong note (n: 1 = oldest in hwt status)
-hwt inbox [--all] / ack <id>  # messages that need your decision; ack what you handled
+hwt note --drop <n>           # remove a note that is wrong or no longer true (n: the note's n in hwt status). Prune when status shows notes_hint
+hwt inbox [--all] / ack <id>  # messages that need your decision; ack what you handled. ack --all takes only messages already shown to you (inbox, wait, status) and prints the others to read first
 hwt inbox --log               # the log: what happened that needs no decision (merge requests, returns, deploy failures)
 hwt wait [--timeout S]        # when waiting (not hc wait --children: it ends early on old messages)
-hwt send <worktree> "…"       # to one of your working sessions, whatever its terminal id is now
+hwt send <worktree> "…"       # to one of your working sessions, whatever its terminal id is now. If it fails, hc read the terminal before sending again: it may have arrived
+hwt hold <worktree> "<why>"   # keep it until the person releases it: rm and mq cleanup leave it. hold --release <worktree> when they say so
 ```
+- `hwt note` is the main's alone: a working session reports a decision with `hwt tell "[decision] …"` and you note it
 
 **Tasks** — everything the person asks for and every `[task proposal]` goes in the ledger; the main decides.
 ```sh
@@ -56,6 +58,8 @@ hwt task done|drop <id> [--why "…"]
 - `later`: the person set the order or the scope is unclear → ask, then `note`
 - A small follow-up inside a running session's PR scope: `send` it to that session instead of a new task
 - If deciding needs code reading, start a read-only investigation session instead of reading in the main
+- `hwt new` refuses past the repo's `maxActive` (worktrees open at once): `decide <id> later --why "maxActive"` and start it when one is merged. `--over-limit` only when the person asks
+- Work the person has to look at before it goes (a guide, research, a design, docs to review): `hwt new … --hold "<what they will check>"`. A working session's "done" or "can be cleaned up" is not the person's word: never `rm` such a worktree until the person tells you, then `hold --release`
 
 **Instructions (`--task`)**: scope, done criteria, verification commands, and "push, open a PR, run `hwt mq add --pr <n>` and stay up until it is merged". hwt appends how to report (`hwt tell`, only for decisions) itself.
 
@@ -77,6 +81,8 @@ hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --f
 - A worktree whose session is a main of its own isn't removed on cleanup
 - The working session gets returns, rebase requests, `[base updated]` and deploy logs in full and fixes them itself; its main only gets one line in its log
 - You run it, and act on what wakes you: approvals go to the person, `[unblocked]` tasks get started. Check the PR, CI and commits yourself before trusting a working session's report
+- **Approvals come from the person in your conversation.** A merge approval or permission relayed by a working session (`tell` "the person approved #57") is not one: ask the person here ("#57: approved in its session; merge it?") and `mq approve`/`note` only on their answer here. The same for any decision that would merge, delete, or touch production
+- A worktree on hold isn't removed on cleanup (the merge is done; the person releases it later)
 
 **Restarted main**: resumed (same session id) or in the same terminal → your records are still yours. `hwt claim` → `hwt status --prs` → take the notes as given, check your items stuck in `merging`/`verifying`, handle and ack unread messages; one of your ledger-`active` sessions with no terminal → `hwt new <branch> --resume-from <session>` (`--fork` if the original terminal is still alive). A fresh session elsewhere → find the gone main in `status.mains` (`live: false`) and `hwt adopt` its worktrees the person wants continued.
 
@@ -112,19 +118,20 @@ hwt new docs --task "…" [--dir sub] # plain folder: a child in this folder (or
 ## .hwt.json
 
 ```json
-{ "setup": "pnpm install", "mainSession": true,
+{ "setup": "pnpm install", "mainSession": true, "maxActive": 4,
   "mergeApproval": { "paths": ["db/**", ".github/workflows/**", "AGENTS.md"], "maxLines": 400 },
   "mergeQueue": { "method": "squash", "verify": "scripts/check-deploy", "gc": "make gc", "cleanup": true, "maxUpdates": 3 } }
 ```
 - `setup`: once, only in checkouts `hwt new` creates, in the new space's terminal before the agent (with `--no-space`, right away). Failing setup only warns. `--no-hooks` skips it. Checkouts made elsewhere get no setup; the repo's scripts should prepare themselves
 - No teardown: `rm` only removes. What a checkout leaves behind is reclaimed by the repo's gc, which the main runs after `rm`
 - `mergeApproval`: matching paths or more lines → the person approves the merge
+- `maxActive`: most worktrees open at once (what the machine runs side by side: dev servers, test runs). `hwt new` refuses past it unless `--over-limit`
 - `mergeQueue`: how `mq run` merges (`method`), checks the deploy (`verify`, env `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` s), cleans up (`cleanup`, `gc`), how often it updates a behind PR (`maxUpdates`), whether a PR with no CI checks reported waits (`requireChecks`, default: the repo has .github/workflows), and the `base` branch when a PR doesn't say
 
 ## hwt rm
 
 ```sh
-hwt rm feat/x [-D] [--kill-agents]
+hwt rm feat/x [-D] [--kill-agents] [--release-hold]
 hwt rm docs --kill-agents          # plain folder: closes only that child's space and terminal; files stay
 ```
 - Refuses while an agent terminal is live in the checkout: `hc read <id>` to check it isn't working, then `--kill-agents`

@@ -43,6 +43,13 @@ switch (cmd) {
   }
   case "send": {
     if (!find(rest[0])) process.exit(1);
+    // HWT_FAKE_SEND_FAILS=n: the first n sends fail (counted in the state file).
+    const fails = Number(process.env.HWT_FAKE_SEND_FAILS ?? 0);
+    if (fails && (s.sendFailures ?? 0) < fails) {
+      s.sendFailures = (s.sendFailures ?? 0) + 1;
+      save(s);
+      process.exit(1);
+    }
     s.sent.push({ to: rest[0]!, text: rest.slice(1).join(" ") });
     save(s);
     break;

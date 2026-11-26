@@ -48,6 +48,11 @@ export interface RepoConfig {
   mergeQueue?: MergeQueueConfig;
   /** Default agent command for `hwt new` in this repo. */
   agent?: string;
+  /**
+   * Most worktrees open at once (what the machine can run side by side: dev servers, tests). hwt new refuses
+   * past it unless --over-limit. 0 or unset: no limit.
+   */
+  maxActive?: number;
   /** Language of the instructions hwt gives agents and of its message tags. */
   lang?: Lang;
 }

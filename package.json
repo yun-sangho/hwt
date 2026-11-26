@@ -1,6 +1,6 @@
 {
   "name": "hwt",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "license": "MIT",
   "description": "Git worktrees as Herdr spaces, with a ledger for running many coding agents in parallel",
   "type": "module",

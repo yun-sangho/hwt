@@ -3,9 +3,9 @@ import { codexAdapter, sessionFromEnv } from "../agents.ts";
 import { samePath, worktreeList } from "../git.ts";
 import { childKey, findChild, isGit, projectRoot, workDir } from "../project.ts";
 import * as herdr from "../herdr.ts";
-import { ack, appendInbox, logInbox, readInbox, readLedger, unackedInbox, updateLedger } from "../ledger.ts";
+import { ack, appendInbox, logInbox, markShown, readInbox, readLedger, shownIds, unackedInbox, updateLedger } from "../ledger.ts";
 import {
-  actsAsMain, claimMain, liveTerminal, mainOnly, myMain, ownerOf, owns, readsMessage, recipients, selfId,
+  actsAsMain, claimMain, liveTerminal, mainOnly, myMain, noteIsOver, ownerOf, owns, readsMessage, recipients, selfId,
 } from "../session.ts";
 import type { InboxMessage, Ledger } from "../ledger.ts";
 import { parse } from "../args.ts";
@@ -119,16 +119,33 @@ export function cmdInbox(args: string[]): void {
   mainOnly(main, "inbox");
   const log = args.includes("--log");
   const all = args.includes("--all");
-  const list = log ? logInbox(main) : all ? readInbox(main).filter((m) => m.wake !== false) : unackedInbox(main);
-  for (const m of myMessages(main, list)) process.stdout.write(JSON.stringify(m) + "\n");
+  const list = myMessages(main, log ? logInbox(main) : all ? readInbox(main).filter((m) => m.wake !== false) : unackedInbox(main));
+  for (const m of list) process.stdout.write(JSON.stringify(m) + "\n");
+  if (!log) markShown(main, list.map((m) => m.id));
 }
 
+/**
+ * hwt ack <id>...|--all: mark messages handled. --all takes only the ones hwt has already shown this main
+ * (inbox, wait, status); any others are printed instead, to be read before they can be acked.
+ */
 export function cmdAck(args: string[]): void {
   const main = projectRoot();
   mainOnly(main, "ack");
-  if (args[0] === "--all") ack(main, myMessages(main, unackedInbox(main)).map((m) => m.id));
-  else if (args.length) ack(main, args);
-  else die("usage: hwt ack <id>...|--all");
+  if (args[0] === "--all") {
+    const shown = shownIds(main);
+    const open = myMessages(main, unackedInbox(main));
+    const acked = open.filter((m) => shown.has(m.id));
+    const unread = open.filter((m) => !shown.has(m.id));
+    ack(main, acked.map((m) => m.id));
+    markShown(main, unread.map((m) => m.id));
+    return printJson({
+      acked: acked.map((m) => m.id),
+      ...(unread.length ? { not_acked_unread: unread, hint: "read these first; then hwt ack them (or ack --all again)" } : {}),
+    });
+  }
+  if (!args.length) die("usage: hwt ack <id>...|--all");
+  ack(main, args);
+  printJson({ acked: args });
 }
 
 const NOTE_USAGE = "hwt note [--branch B] <text> | note --drop <n>  (n: 1 = oldest note in hwt status)";
@@ -142,6 +159,7 @@ function myNotes(l: Ledger) {
 /** hwt note [--branch B] TEXT: a user decision or standing permission this main session must not lose. */
 export function cmdNote(args: string[]): void {
   const a = parse(args, { opts: ["branch", "drop"] }, NOTE_USAGE);
+  mainOnly(projectRoot(), "note");
   if (a.opt.drop !== undefined) {
     const main = projectRoot();
     const n = Number(a.opt.drop);
@@ -181,10 +199,14 @@ function fillCodexSessions(main: string): void {
 }
 
 /**
- * hwt status [--prs]: everything a restarted main session needs, in one JSON object. Every main and every
+ * hwt status [--prs] [--full]: everything a restarted main session needs, in one JSON object. Every main and every
  * worktree is listed (with its owner, and mine: true for this main's); notes, tasks and the inbox are this main's.
+ * It is read at every start, so by default it leaves out what is over: notes about a branch whose worktree was
+ * removed or whose merge is done (counted in notes_hidden), and long task texts are cut. --full shows all.
  */
 export function cmdStatus(args: string[]): void {
+  const a = parse(args, { flags: ["prs", "full"] }, "hwt status [--prs] [--full]");
+  const full = !!a.flag.full;
   const main = projectRoot();
   fillCodexSessions(main);
   const live = herdr.terminals();
@@ -194,7 +216,7 @@ export function cmdStatus(args: string[]): void {
     ? worktreeList(main)
     : Object.entries(readLedger(main).worktrees).filter(([, w]) => w.state === "active").map(([b, w]) => ({ branch: b, path: w.path }));
   let prs: { number: number; headRefName: string; state: string }[] | null = null;
-  if (args[0] === "--prs" && git && has("gh")) {
+  if (a.flag.prs && git && has("gh")) {
     const r = run(["gh", "pr", "list", "--state", "all", "--limit", "40", "--json", "number,headRefName,state"], { cwd: main });
     try {
       prs = r.ok ? JSON.parse(r.out) : null;
@@ -204,6 +226,12 @@ export function cmdStatus(args: string[]): void {
   const me = selfId(l);
   const mine = (owner: string | null | undefined) => owns(me, owner);
   const under = (p: string | undefined, d: string) => !!p && (p === d || p.startsWith(d + "/"));
+  // Notes carry n, the number hwt note --drop takes, so hiding some doesn't shift them.
+  const allNotes = myNotes(l).map((n, i) => ({ n: i + 1, ...n }));
+  const notes = full ? allNotes : allNotes.filter((n) => !noteIsOver(l, n.branch));
+  const cut = (t: string | undefined) => (full || !t || t.length <= 200 ? t : `${t.slice(0, 200)}… (hwt status --full)`);
+  const unacked = myMessages(main, unackedInbox(main), l);
+  markShown(main, unacked.map((m) => m.id));
   printJson(
     {
       me: me || null,
@@ -211,13 +239,15 @@ export function cmdStatus(args: string[]): void {
         id, terminal: r.terminal, session: r.session, path: r.path, claimed: r.claimed,
         live: !!liveTerminal(r), me: id === me,
       })),
-      notes: myNotes(l),
+      notes,
+      ...(notes.length < allNotes.length ? { notes_hidden: allNotes.length - notes.length } : {}),
+      ...(notes.length > 30 ? { notes_hint: `${notes.length} notes: drop the ones no longer true (hwt note --drop <n>)` } : {}),
       tasks: (l.tasks ?? []).filter((t) => ["queued", "decided", "running"].includes(t.state) && mine(t.owner)),
       // One queue for the repo (merges go one at a time), each item marked with the main that handles it.
       merges: (l.merges ?? [])
         .filter((m) => !["done", "failed"].includes(m.state))
         .map((m) => ({ ...m, owner: ownerOf(l, m.branch), mine: mine(ownerOf(l, m.branch)) })),
-      inbox_unacked: myMessages(main, unackedInbox(main), l),
+      inbox_unacked: unacked,
       // The latest log entries, one line each (hwt inbox --log has them all).
       log_recent: myMessages(main, logInbox(main), l).slice(-5).map((m) => `${m.at.slice(11, 16)} ${m.text.split("\n")[0]!.slice(0, 140)}`),
       worktrees: wts
@@ -239,7 +269,7 @@ export function cmdStatus(args: string[]): void {
             mine: !!r && mine(owner),
             main_of_its_own: !!r?.self_main,
             ledger: r
-              ? { terminal: r.terminal, name: r.name, session: r.session, task: r.task, created: r.created, state: r.state }
+              ? { terminal: r.terminal, name: r.name, session: r.session, task: cut(r.task), created: r.created, state: r.state, ...(r.hold ? { hold: r.hold } : {}) }
               : null,
             // A folder child shares its folder: only its own terminal is its.
             terminals: live
@@ -267,7 +297,10 @@ export function cmdWait(args: string[]): void {
   const end = Date.now() + timeout * 1000;
   while (Date.now() < end) {
     const n = myMessages(main, unackedInbox(main));
-    if (n.length) return printJson({ reason: "inbox", messages: n });
+    if (n.length) {
+      markShown(main, n.map((m) => m.id));
+      return printJson({ reason: "inbox", messages: n });
+    }
     const left = Math.ceil((end - Date.now()) / 1000);
     const r = herdr.waitChildren(left < 60 ? left + 1 : 60);
     const reason = r?.reason;
