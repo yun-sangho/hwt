@@ -577,6 +577,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     const w = l.worktrees[x.branch];
     const ownMain = !!w?.self_main;
     if (ownMain) notes.push("worktree kept: its session is a main of its own");
+    else if (w?.state === "active" && w.hold) notes.push(`worktree kept: on hold (${w.hold}); hwt rm --release-hold once the person says so`);
     else if (w?.state === "active") {
       try {
         o.remove(x.branch);

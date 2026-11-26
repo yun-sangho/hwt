@@ -3,6 +3,7 @@
 //   ledger.json  {mains, notes, worktrees, tasks, merges}   rewritten under a lock (the one before: ledger.json.bak)
 //   inbox.jsonl  one line per `hwt tell` (worker → its main), appended, never rewritten
 //   acked        ids a main session has handled, one per line
+//   shown        ids hwt has put in front of a main (inbox, wait, status): ack --all acks only these
 // A repo can have several main sessions. Each owns the worktrees it made (worktree.owner = its id), and the
 // tasks, notes, inbox messages and merge requests that come with them. Records with no owner (made before
 // there were owners, or by no session at all) belong to every main.
@@ -45,6 +46,8 @@ export interface WorktreeRecord {
   /** The Herdr space hwt opened for it. */
   space?: string | null;
   created: string;
+  /** Kept until the person releases it (hwt hold): rm and the merge queue's cleanup leave it. The reason. */
+  hold?: string | null;
   state: "active" | "removed";
   removed?: string;
 }
@@ -267,4 +270,14 @@ export function logInbox(main: string): InboxMessage[] {
 
 export function ack(main: string, ids: string[]): void {
   if (ids.length) appendFileSync(join(stateDir(main), "acked"), ids.join("\n") + "\n");
+}
+
+/** Record that these messages were put in front of a main (so ack --all may take them). */
+export function markShown(main: string, ids: string[]): void {
+  if (ids.length) appendFileSync(join(stateDir(main), "shown"), ids.join("\n") + "\n");
+}
+
+export function shownIds(main: string): Set<string> {
+  const f = join(stateDir(main, false), "shown");
+  return new Set(existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean) : []);
 }

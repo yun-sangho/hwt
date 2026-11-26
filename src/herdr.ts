@@ -1,7 +1,7 @@
 // Herdr: the desktop app (`herdr-app`: spaces, tabs) and its terminal core (`hc`: terminals, messages).
 // hwt requires both. Every JSON shape hwt reads from them is typed here, in one place, so a change in
 // Herdr's output is a change in this file only.
-import { run, runOut, has } from "./util.ts";
+import { run, runOut, has, sleepMs } from "./util.ts";
 
 export interface Terminal {
   address: string;
@@ -119,8 +119,20 @@ export function label(address: string, kv: string): void {
   run(["hc", "label", address, kv]);
 }
 
+/**
+ * Send text to a terminal. A failed send is tried twice more while the terminal is still live (hc can fail
+ * for a moment while a terminal is busy). False: it never went through, as far as hc says.
+ */
 export function send(address: string, text: string): boolean {
-  return run(["hc", "send", address, text]).ok;
+  for (let i = 0; i < 3; i++) {
+    if (i) {
+      sleepMs(700 * i);
+      const t = terminal(address);
+      if (!t || !isLive(t)) return false;
+    }
+    if (run(["hc", "send", address, text]).ok) return true;
+  }
+  return false;
 }
 
 export function kill(address: string): void {

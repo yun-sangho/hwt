@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // hwt: git worktrees as Herdr spaces, and a ledger for running many coding agents in parallel.
 import pkg from "../package.json" with { type: "json" };
-import { cmdLs, cmdNew, cmdRm, cmdSend, cmdTitle } from "./commands/worktree.ts";
+import { cmdHold, cmdLs, cmdNew, cmdRm, cmdSend, cmdTitle } from "./commands/worktree.ts";
 import { cmdAck, cmdAdopt, cmdClaim, cmdMains, cmdInbox, cmdMain, cmdNote, cmdStatus, cmdTell, cmdWait } from "./commands/session.ts";
 import { cmdMq, cmdTask } from "./commands/queue.ts";
 import { cmdDoctor, cmdHook, cmdInit, cmdShellInit } from "./commands/tools.ts";
@@ -12,14 +12,16 @@ const HELP = `hwt ${pkg.version}: git worktrees as Herdr spaces
 
 Worktrees
   hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T]
-                   [--task-id ID] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks]
+                   [--task-id ID] [--hold REASON] [--resume-from ID [--fork]] [--dir D] [--no-space]
+                   [--no-hooks] [--over-limit]
                    (plain folder, no git: the child opens in the folder or --dir, no checkout)
-  hwt rm [<branch>] [-f] [-D] [--kill-agents]
+  hwt rm [<branch>] [-f] [-D] [--kill-agents] [--release-hold]
+  hwt hold <worktree|branch> REASON | hold --release <worktree|branch>
   hwt ls
   hwt send <worktree|branch> TEXT        hwt title <worktree|branch> TEXT
 
 Main-session workflow ("mainSession": true in .hwt.json; several mains, each owning its worktrees)
-  hwt claim | adopt <worktree>... | main | status [--prs] | wait [--timeout S]
+  hwt claim | adopt <worktree>... | main | status [--prs] [--full] | wait [--timeout S]
   hwt mains [ls] | mains prune [--release] [--dry-run]
   hwt tell TEXT | inbox [--all] [--log] | ack <id>...|--all | note [--branch B] TEXT|--drop N
   hwt task add TITLE [--touches p1,p2] [--detail T] | ls [--all] [--every-main] | decide <id> now|later|after:<branch> --why T | done|drop <id>
@@ -45,6 +47,7 @@ async function main(argv: string[]): Promise<void> {
     case "ls": return cmdLs();
     case "send": return cmdSend(args);
     case "title": return cmdTitle(args);
+    case "hold": return cmdHold(args);
     case "claim": return cmdClaim();
     case "adopt": return cmdAdopt(args);
     case "mains": return cmdMains(args);

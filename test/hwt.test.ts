@@ -150,6 +150,55 @@ describe("new / rm", () => {
     expect(existsSync(o.path)).toBe(false);
   });
 
+  test("maxActive: new refuses past the repo's limit unless --over-limit; reopening doesn't count", () => {
+    config({ maxActive: 2 });
+    hwt(["new", "feat/m1", "--no-space"]);
+    hwt(["new", "feat/m2", "--no-space"]);
+    const r = hwt(["new", "feat/m3", "--no-space"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("maxActive");
+    expect(r.err).toContain("feat/m1");
+    expect(existsSync(join(dir, "wts", "repo", "feat-m3"))).toBe(false);
+    expect(hwt(["new", "feat/m1", "--no-space"]).code).toBe(0);
+    expect(hwt(["new", "feat/m3", "--no-space", "--over-limit"]).code).toBe(0);
+    hwt(["rm", "feat/m3"]);
+    hwt(["rm", "feat/m2"]);
+    expect(hwt(["new", "feat/m4", "--no-space"]).code).toBe(0);
+  });
+
+  test("hold: rm refuses a held worktree until it is released", () => {
+    config({ mainSession: true });
+    const o = json(hwt(["new", "docs/guide", "--no-space", "--hold", "the person reads the guide first"]));
+    expect(ledger().worktrees["docs/guide"].hold).toBe("the person reads the guide first");
+    const r = hwt(["rm", "docs/guide"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("on hold");
+    expect(existsSync(o.path)).toBe(true);
+    expect(json(hwt(["hold", "--release", "docs/guide"])).hold).toBeNull();
+    expect(hwt(["rm", "docs/guide"]).code).toBe(0);
+    const p = json(hwt(["new", "docs/two", "--no-space"])).path;
+    hwt(["hold", "docs-two", "keep for review"]);
+    expect(hwt(["rm", "docs/two"]).code).toBe(1);
+    expect(hwt(["rm", "docs/two", "--release-hold"]).code).toBe(0);
+    expect(existsSync(p)).toBe(false);
+    expect(hwt(["hold", "docs/none", "x"]).code).toBe(1);
+    const wt = json(hwt(["new", "feat/h", "--no-space"])).path;
+    expect(hwt(["hold", "feat/h", "mine"], { cwd: wt }).code).toBe(1);
+  });
+
+  test("send retries a failed hc send; a send that never went through says to check before resending", () => {
+    const o = json(hwt(["new", "feat/snd"]));
+    const ok = hwt(["send", "feat/snd", "hello"], { env: { HWT_FAKE_SEND_FAILS: "2" } });
+    expect(ok.code).toBe(0);
+    expect(fake().sent.map((x) => x.text)).toEqual(["hello"]);
+    const st = fake();
+    st.sendFailures = 0;
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(st));
+    const bad = hwt(["send", "feat/snd", "again"], { env: { HWT_FAKE_SEND_FAILS: "5" } });
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain(`hc read ${o.terminal}`);
+  });
+
   const exitAgents = () => {
     const st = fake();
     for (const t of st.terminals) t.state = "exited";
@@ -496,6 +545,53 @@ describe("main-session workflow", () => {
     expect(ledger().notes.map((n: { text: string }) => n.text)).toEqual(["keep", "also keep"]);
   });
 
+  test("note is the main's: a working session reports decisions with tell instead", () => {
+    config({ mainSession: true });
+    const wt = json(hwt(["new", "feat/nt", "--no-space"])).path;
+    const r = hwt(["note", "the person said ship it"], { cwd: wt });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("hwt tell");
+    expect(hwt(["note", "--drop", "1"], { cwd: wt }).code).toBe(1);
+    expect(ledger().notes ?? []).toEqual([]);
+  });
+
+  test("ack --all takes only messages hwt has shown; the rest come back to be read", () => {
+    config({ mainSession: true });
+    terminal("t1", repo);
+    hwt(["claim"], as("t1"));
+    const wt = json(hwt(["new", "feat/ak", "--no-space"], as("t1"))).path;
+    const first = json(hwt(["tell", "[decision] one"], { cwd: wt })).id;
+    hwt(["inbox"], as("t1"));
+    const second = json(hwt(["tell", "[decision] two"], { cwd: wt })).id;
+    const r = json(hwt(["ack", "--all"], as("t1")));
+    expect(r.acked).toEqual([first]);
+    expect(r.not_acked_unread.map((m: { id: string }) => m.id)).toEqual([second]);
+    expect(json(hwt(["ack", "--all"], as("t1"))).acked).toEqual([second]);
+    expect(hwt(["inbox"], as("t1")).out).toBe("");
+    const third = json(hwt(["tell", "[decision] three"], { cwd: wt })).id;
+    expect(json(hwt(["status"], as("t1"))).inbox_unacked.map((m: { id: string }) => m.id)).toEqual([third]);
+    expect(json(hwt(["ack", "--all"], as("t1"))).acked).toEqual([third]);
+  });
+
+  test("status leaves out notes on finished branches and cuts long tasks; --full shows all; n is what --drop takes", () => {
+    config({ mainSession: true });
+    hwt(["new", "feat/done", "--no-space"]);
+    hwt(["new", "feat/open", "--no-space", "--task", "x".repeat(500)]);
+    hwt(["note", "general rule"]);
+    hwt(["note", "--branch", "feat/done", "merge when green"]);
+    hwt(["note", "--branch", "feat/open", "ask before merging"]);
+    hwt(["rm", "feat/done"]);
+    const st = json(hwt(["status"]));
+    expect(st.notes.map((n: { n: number; text: string }) => [n.n, n.text])).toEqual([[1, "general rule"], [3, "ask before merging"]]);
+    expect(st.notes_hidden).toBe(1);
+    expect(st.worktrees[0].ledger.task.length).toBeLessThan(260);
+    const full = json(hwt(["status", "--full"]));
+    expect(full.notes).toHaveLength(3);
+    expect(full.notes_hidden).toBeUndefined();
+    expect(full.worktrees[0].ledger.task).toHaveLength(500);
+    expect(json(hwt(["note", "--drop", "3"])).dropped.text).toBe("ask before merging");
+  });
+
   test("note and status", () => {
     config({ mainSession: true });
     hwt(["new", "feat/s", "--no-space", "--title", "S"]);
@@ -623,6 +719,22 @@ describe("merge queue runner", () => {
     expect(json(hwt(["task", "ls", "--all"], t1))[0].state).toBe("done");
     expect(json(hwt(["mq", "log", item("feat/a").id])).history.map((h: { to: string }) => h.to)).toEqual(["queued", "merging", "verifying", "cleaning", "done"]);
     expect(ledger().mq.lease).toBeNull();
+  });
+
+  test("cleanup leaves a worktree on hold and says so", () => {
+    config({ mainSession: true });
+    sh(["git", "push", "-q", "origin", "main"]);
+    const wt = json(hwt(["new", "docs/g", "--no-space", "--hold", "person reviews it"], t1)).path;
+    writeFileSync(join(wt, "g"), "g\n");
+    sh(["git", "add", "."], wt);
+    sh(["git", "commit", "-qm", "g"], wt);
+    sh(["git", "push", "-q", "-u", "origin", "docs/g"], wt);
+    pr(1, "docs/g");
+    hwt(["mq", "add", "--pr", "1"], { cwd: wt });
+    expect(run().merged).toEqual(["docs/g"]);
+    expect(existsSync(wt)).toBe(true);
+    expect(ledger().worktrees["docs/g"].state).toBe("active");
+    expect(item("docs/g").why).toContain("on hold");
   });
 
   test("an accepted GitHub merge queue entry preserves the worktree until the PR merges", () => {

@@ -8,7 +8,7 @@ import { childKey, isGit, projectRoot } from "../project.ts";
 import * as herdr from "../herdr.ts";
 import { readLedger, stateDir, unackedInbox } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
-import { claimMain, isMainSessionRepo, mainId, owns } from "../session.ts";
+import { claimMain, isMainSessionRepo, mainId, noteIsOver, owns } from "../session.ts";
 import { basename, die, has, printJson, run, runOut, warn } from "../util.ts";
 import { claudeDir, claudeHookInstalled, codexBlockInstalled, codexDir, ourSkill } from "./install.ts";
 
@@ -216,7 +216,7 @@ export async function cmdHook(args: string[]): Promise<void> {
       const brief = {
         me: id || null,
         other_mains: others,
-        notes: l.notes.filter((n) => mine(n.owner)).map((n) => n.text),
+        notes: l.notes.filter((n) => mine(n.owner) && !noteIsOver(l, n.branch)).map((n) => n.text),
         tasks: (l.tasks ?? [])
           .filter((t) => ["queued", "decided", "running"].includes(t.state) && mine(t.owner))
           .map(({ id, title, state, decision, branch }) => ({ id, title, state, decision, branch })),

@@ -7,12 +7,12 @@ import { checkoutConfig, defaultAgent, langFor, mainConfig, worktreesRoot } from
 import { currentBranch, git, gitOut, isDirty, realpath, samePath, toplevel, worktreeList } from "../git.ts";
 import { childKey, findChild, isGit, projectRoot } from "../project.ts";
 import * as herdr from "../herdr.ts";
-import { type Ledger, readLedger, updateLedger } from "../ledger.ts";
+import { type Ledger, readLedger, updateLedger, type WorktreeRecord } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
 import { claimMain, isMainSessionRepo, mainOnly, selfId } from "../session.ts";
 import { basename, die, printJson, run, runOut, shQuote, shellWords, sleepMs, slug, stamp, warn } from "../util.ts";
 
-const NEW_USAGE = "hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T] [--task-id ID] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks]";
+const NEW_USAGE = "hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T] [--task-id ID] [--hold REASON] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks] [--over-limit]";
 
 export function worktreePath(main: string, branchOrName: string): string {
   const base = join(worktreesRoot(), basename(main));
@@ -29,8 +29,8 @@ export function cmdNew(args: string[]): void {
   const a = parse(
     args,
     {
-      opts: ["agent", "task", "title", "task-id", "resume-from", "dir"],
-      flags: ["fork", "no-space", "no-hooks"],
+      opts: ["agent", "task", "title", "task-id", "resume-from", "dir", "hold"],
+      flags: ["fork", "no-space", "no-hooks", "over-limit"],
       // Herdr starts every worktree agent on its own (no parent) and can't name a terminal; these are
       // accepted so old callers keep working. `hc run` is the way to get a child agent.
       ignored: { name: true, detach: false, attach: false },
@@ -74,6 +74,20 @@ export function cmdNew(args: string[]): void {
   } else if (existsSync(wt)) {
     warn(`reusing ${wt}`);
   } else {
+    // How many checkouts the machine can run side by side is the repo's call (.hwt.json maxActive).
+    const max = mainConfig(main).maxActive ?? 0;
+    if (max > 0 && !a.flag["over-limit"]) {
+      const open = Object.entries(readLedger(main).worktrees).filter(
+        ([, w]) => w.state === "active" && w.kind !== "folder" && !w.self_main && existsSync(w.path),
+      );
+      if (open.length >= max) {
+        die(
+          `${open.length} worktrees are open and this repo allows ${max} at once (.hwt.json maxActive): ` +
+            `${open.map(([b]) => b).join(", ")}\n  queue it (hwt task decide <id> later --why "maxActive") until one is merged, ` +
+            "or pass --over-limit if the person asked for it",
+        );
+      }
+    }
     const exists = git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], main).ok;
     const add = exists ? ["worktree", "add", wt, branch] : ["worktree", "add", "-b", branch, wt, "HEAD"];
     if (!run(["git", ...add], { cwd: toplevel() ?? main, passthrough: true }).ok) die("git worktree add failed");
@@ -102,6 +116,7 @@ export function cmdNew(args: string[]): void {
     updateLedger(main, (l) => {
       l.worktrees[branch] = {
         path: wt, title, terminal: null, name: null, session: null, task: task.slice(0, 600), owner, created: stamp(), state: "active",
+        ...(a.opt.hold ? { hold: a.opt.hold } : {}),
       };
     });
     printJson({ ...base, space: null, terminal: null, setup: st });
@@ -159,6 +174,7 @@ export function cmdNew(args: string[]): void {
       path: wt, title: title || prev?.title || "", agent: kind, terminal: null, name: null, session,
       task: task ? task.slice(0, 600) : (prev?.task ?? ""), owner: owner ?? prev?.owner ?? null,
       created: prev?.created ?? stamp(), state: "active",
+      ...((a.opt.hold ?? prev?.hold) ? { hold: a.opt.hold ?? prev?.hold } : {}),
       ...(folder ? { kind: "folder" as const } : {}),
     };
   });
@@ -183,12 +199,21 @@ export function cmdNew(args: string[]): void {
   printJson({ ...base, space, tab, terminal, name, parent: null, setup: setup ? "in-space" : null, session });
 }
 
-const RM_USAGE = "hwt rm [<branch>|<path>] [-f] [-D] [--kill-agents]";
+const RM_USAGE = "hwt rm [<branch>|<path>] [-f] [-D] [--kill-agents] [--release-hold]";
 
 export interface RmOptions {
   force?: boolean;
   deleteBranch?: boolean;
   killAgents?: boolean;
+  /** Remove a worktree on hold (the person said its work can go). */
+  releaseHold?: boolean;
+}
+
+/** Refuse to remove a worktree the person wants kept until they have looked at it. */
+function refuseHeld(name: string, w: WorktreeRecord | undefined, o: RmOptions): void {
+  if (w?.hold && !o.releaseHold) {
+    die(`${name} is on hold: ${w.hold}\n  remove it only once the person says so (hwt hold --release ${name}, or rm --release-hold)`);
+  }
 }
 
 export interface RmResult {
@@ -213,6 +238,7 @@ function removeFolderChild(main: string, target: string | undefined, o: RmOption
   const hit = findChild(l, key) ?? die(`no child ${key}`);
   const [name, w] = hit;
   if (w.state !== "active") die(`child ${name} was already removed`);
+  refuseHeld(name, w, o);
   const me = herdr.myTerminal();
   // From hc ls, not hc get: only the list says which program (agent) a terminal runs.
   const t = w.terminal ? herdr.terminals().find((x) => x.address === w.terminal) : undefined;
@@ -338,6 +364,7 @@ export function removeWorktree(main: string, target: string | undefined, o: RmOp
     if (existsSync(wt)) branch = currentBranch(wt) || target;
   }
   const records = recordsAt(l0, wt, branch);
+  for (const k of records) refuseHeld(k, l0.worktrees[k], o);
   const gone = !existsSync(wt);
   if (gone && !records.length) die(`no worktree at ${wt}`);
   if (samePath(wt, main)) die("refusing to remove the main checkout");
@@ -399,12 +426,40 @@ export function removeWorktree(main: string, target: string | undefined, o: RmOp
 export function cmdRm(args: string[]): void {
   const a = parse(
     args,
-    { flags: ["force", "delete-branch", "kill-agents"], alias: { "-f": "--force", "-D": "--delete-branch" }, ignored: { "no-hooks": false } },
+    { flags: ["force", "delete-branch", "kill-agents", "release-hold"], alias: { "-f": "--force", "-D": "--delete-branch" }, ignored: { "no-hooks": false } },
     RM_USAGE,
   );
   const main = projectRoot();
   mainOnly(main, "rm");
-  printJson(removeWorktree(main, a.pos[0], { force: a.flag.force, deleteBranch: a.flag["delete-branch"], killAgents: a.flag["kill-agents"] }));
+  printJson(
+    removeWorktree(main, a.pos[0], {
+      force: a.flag.force, deleteBranch: a.flag["delete-branch"], killAgents: a.flag["kill-agents"], releaseHold: a.flag["release-hold"],
+    }),
+  );
+}
+
+const HOLD_USAGE = "hwt hold <worktree|branch> <reason> | hold --release <worktree|branch>";
+
+/**
+ * hwt hold <worktree> REASON: keep a worktree (and its session) until the person releases it, e.g. a guide or
+ * research the person still has to read. rm refuses it and the merge queue's cleanup leaves it.
+ */
+export function cmdHold(args: string[]): void {
+  const a = parse(args, { flags: ["release"] }, HOLD_USAGE);
+  const [target, ...reason] = a.pos;
+  if (!target || (!a.flag.release && !reason.length)) die(`usage: ${HOLD_USAGE}`);
+  const main = projectRoot();
+  mainOnly(main, "hold");
+  const l = readLedger(main);
+  const hit = findChild(l, target) ?? (isGit(main) ? Object.entries(l.worktrees).find(([, w]) => w.state === "active" && worktreeList(main).some((x) => x.branch === target && samePath(x.path, w.path))) ?? null : null);
+  if (!hit || hit[1].state !== "active") die(`no active worktree ${target} in the ledger`);
+  const [key] = hit;
+  updateLedger(main, (x) => {
+    const w = x.worktrees[key]!;
+    if (a.flag.release) delete w.hold;
+    else w.hold = reason.join(" ");
+  });
+  printJson({ worktree: key, hold: a.flag.release ? null : reason.join(" ") });
 }
 
 /** The live agent working in <wt>, if any. */
@@ -443,7 +498,9 @@ export function cmdSend(args: string[]): void {
     title = w.title ?? "";
   }
   if (!to) die(`no live agent in ${label} (reopen it: hwt new <branch> --resume-from <session>)`);
-  if (!herdr.send(to, rest.join(" "))) die(`hc send ${to} failed`);
+  if (!herdr.send(to, rest.join(" "))) {
+    die(`hc send ${to} failed (tried 3 times). It may still have arrived: check with hc read ${to} before sending it again`);
+  }
   printJson({ worktree: label, title, terminal: to, sent: true });
 }
 

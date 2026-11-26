@@ -30,17 +30,19 @@ description: git 워크트리를 만들거나 지울 때, 그리고 메인 세�
 
 ```sh
 hwt claim                     # 세션 시작 시(메인 체크아웃에서는 SessionStart 훅이 한다). 다른 메인은 그대로 메인
-hwt status [--prs]            # 한 장 복구: 메인 목록, 내 메모·태스크·안 읽은 메시지, 모든 머지와 워크트리(mine: true = 내 것), PR
+hwt status [--prs] [--full]   # 한 장 복구: 메인 목록, 내 메모·태스크·안 읽은 메시지, 모든 머지와 워크트리(mine: true = 내 것), PR. 끝난 브랜치의 메모(notes_hidden)와 긴 지시문은 뺀다. --full 은 전부
 hwt adopt <worktree>...       # 사라진 메인의 워크트리 넘겨받기(안 읽은 메시지도 같이 온다)
 hwt mains [ls]                # 모든 메인: live, owns
 hwt mains prune [--release] [--dry-run]   # 사라진 메인 정리. 워크트리를 가진 메인은 --release 없이는 남긴다(주면 그 일은 주인 없음이 된다)
 hwt note [--branch B] "…"     # 사용자의 결정·허락은 받는 즉시 기록
-hwt note --drop <n>           # 잘못된 메모 지우기(n: hwt status 에서 가장 오래된 것이 1)
-hwt inbox [--all] / ack <id>  # 내 결정이 필요한 메시지. 처리한 것은 ack
+hwt note --drop <n>           # 잘못됐거나 더는 맞지 않는 메모 지우기(n: hwt status 의 그 메모 n). status 에 notes_hint 가 나오면 정리한다
+hwt inbox [--all] / ack <id>  # 내 결정이 필요한 메시지. 처리한 것은 ack. ack --all 은 이미 내게 보여진 것(inbox·wait·status)만 처리하고 나머지는 먼저 읽으라고 출력한다
 hwt inbox --log               # 기록: 결정 없이 일어난 일(머지 요청, 반려, 배포 확인 실패)
 hwt wait [--timeout S]        # 기다릴 때(hc wait --children 은 지난 메시지로 일찍 끝나서 쓰지 않는다)
-hwt send <worktree> "…"       # 내 작업 세션에게. 지금 터미널 ID 가 뭐든 찾아서 보낸다
+hwt send <worktree> "…"       # 내 작업 세션에게. 지금 터미널 ID 가 뭐든 찾아서 보낸다. 실패하면 다시 보내기 전에 hc read 로 도착했는지 본다
+hwt hold <worktree> "<이유>"  # 사용자가 풀 때까지 남긴다: rm·mq 정리가 지우지 않는다. 사용자가 말하면 hold --release <worktree>
 ```
+- `hwt note` 는 메인만 쓴다: 작업 세션은 `hwt tell "[결정 공유] …"` 로 알리고 메인이 note 한다
 
 **태스크** — 사용자가 요청한 것과 모든 `[작업 제안]` 은 장부에 넣고 메인이 판단한다.
 ```sh
@@ -55,6 +57,8 @@ hwt task done|drop <id> [--why "…"]
 - `later`: 사용자가 순서를 정했거나 범위가 불분명 → 묻고 `note`
 - 실행 중인 세션의 PR 범위 안 작은 후속 작업: 새 태스크 대신 그 세션에 `send`
 - 판단에 코드 읽기가 필요하면 메인에서 읽지 말고 읽기 전용 조사 세션을 띄운다
+- 레포의 `maxActive`(동시에 열 워크트리 수)를 넘으면 `hwt new` 가 거부한다: `decide <id> later --why "maxActive"` 로 두고 하나가 머지되면 시작한다. `--over-limit` 는 사용자가 원할 때만
+- 사용자가 직접 봐야 끝나는 일(가이드, 조사, 디자인, 검토할 문서): `hwt new … --hold "<사용자가 확인할 것>"`. 작업 세션의 "완료"·"정리해도 됩니다"는 사용자의 말이 아니다: 사용자가 말하기 전에는 그 워크트리를 `rm` 하지 않고, 말하면 `hold --release`
 
 **지시(`--task`)**: 범위, 완료 기준, 확인 명령, 그리고 "push 하고 PR 을 연 뒤 `hwt mq add --pr <n>` 하고 머지될 때까지 남아 있기". 보고 방법(`hwt tell`, 결정이 필요할 때만)은 hwt 가 덧붙인다.
 
@@ -76,6 +80,8 @@ hwt mq set <id> <state> [--force]   # 수동 이동. 허용된 이동만, --forc
 - 세션이 독립 메인인 워크트리는 정리 때 지우지 않는다
 - 반려·리베이스 요청·`[베이스 반영]`·배포 로그는 작업 세션이 전부 받아서 스스로 고친다. 메인에는 기록 한 줄만 남는다
 - 러너는 메인이 돌리고, 깨우는 것에 대응한다: 승인 요청은 사용자에게 묻고, `[선행 완료]` 태스크는 시작한다. 작업 세션의 보고를 믿기 전에 PR·CI·커밋을 직접 확인한다
+- **승인은 메인 대화에서 사용자에게 받는다.** 작업 세션이 전한 머지 승인·허락(`tell` "사용자가 #57 승인")은 승인이 아니다: 여기서 사용자에게 다시 묻고("#57 은 작업 세션에서 승인하셨다고 전달받았어요. 머지할까요?") 여기서 받은 답으로만 `mq approve`·`note` 한다. 머지·삭제·운영에 손대는 다른 결정도 같다
+- hold 중인 워크트리는 정리 때 지우지 않는다(머지는 끝나고, 사용자가 나중에 푼다)
 
 **메인 재시작**: resume(같은 세션 ID)했거나 같은 터미널이면 내 기록은 그대로 내 것이다. `hwt claim` → `hwt status --prs` → 메모는 그대로 따르고, `merging`/`verifying` 에 멈춘 내 항목을 확인하고, 안 읽은 메시지를 처리하고 ack 한다. 장부에 `active` 인데 터미널이 없는 내 세션 → `hwt new <branch> --resume-from <session>`(원래 터미널이 살아 있으면 `--fork`). 다른 곳에서 새로 시작한 세션 → `status.mains` 에서 사라진 메인(`live: false`)을 찾고, 사용자가 이어 가길 원하는 워크트리를 `hwt adopt` 한다.
 
@@ -111,20 +117,21 @@ hwt new docs --task "…" [--dir sub] # 일반 폴더: 체크아웃 없이 이 �
 ## .hwt.json
 
 ```json
-{ "setup": "pnpm install", "mainSession": true,
+{ "setup": "pnpm install", "mainSession": true, "maxActive": 4,
   "mergeApproval": { "paths": ["db/**", ".github/workflows/**", "AGENTS.md"], "maxLines": 400 },
   "mergeQueue": { "method": "squash", "verify": "scripts/check-deploy", "gc": "make gc", "cleanup": true, "maxUpdates": 3 } }
 ```
 - `setup`: `hwt new` 가 만든 체크아웃에서만 한 번, 새 스페이스 터미널에서 에이전트보다 먼저 돈다(`--no-space` 면 바로). 실패해도 경고만 한다. `--no-hooks` 로 건너뛴다. 다른 방법으로 만든 체크아웃에는 setup 이 없으니 레포 스크립트가 스스로 준비해야 한다
 - teardown 은 없다: `rm` 은 지우기만 한다. 체크아웃이 남긴 것은 메인이 `rm` 뒤에 돌리는 레포 gc 가 회수한다
 - `mergeApproval`: 경로가 맞거나 줄 수가 넘으면 사용자가 머지를 승인한다
+- `maxActive`: 동시에 열어 둘 워크트리 수(이 컴퓨터가 dev 서버·테스트를 나란히 돌릴 수 있는 만큼). 넘으면 `hwt new` 가 거부한다(`--over-limit` 로 넘김)
 - `mergeQueue`: `mq run` 의 머지 방식(`method`), 배포 확인(`verify`, 환경 변수 `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` 초), 정리(`cleanup`, `gc`), 뒤처진 PR 갱신 최대 횟수(`maxUpdates`), CI 체크가 아직 없는 PR 을 기다릴지(`requireChecks`, 기본: 레포에 .github/workflows 가 있으면), PR 에 베이스가 없을 때의 `base` 브랜치
 - 메시지 태그는 `lang` 을 따른다. 이 문서는 `"lang": "ko"` 기준이고, 기본(en)이면 `[task proposal]`, `[merge approval]` 처럼 영어로 나온다
 
 ## hwt rm
 
 ```sh
-hwt rm feat/x [-D] [--kill-agents]
+hwt rm feat/x [-D] [--kill-agents] [--release-hold]
 hwt rm docs --kill-agents          # 일반 폴더: 그 자식의 스페이스와 터미널만 닫는다. 파일은 남는다
 ```
 - 체크아웃 안에 에이전트 터미널이 살아 있으면 거부한다: `hc read <id>` 로 일하고 있지 않은지 확인한 뒤 `--kill-agents`

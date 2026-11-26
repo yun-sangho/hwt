@@ -74,6 +74,7 @@ hwt init --main-session     # …and the main-session workflow
 | `mainSession` | `new`/`rm` only from a main session (the main checkout, or a worktree that claimed); working sessions report to their own main with `hwt tell`. |
 | `mergeApproval` | Merges touching these globs, or bigger than `maxLines`, need the person's yes. |
 | `mergeQueue` | How `hwt mq run` drains the queue: `method` (squash), `verify` (deploy check), `verifyTimeout`, `cleanup` (true), `gc`, `maxUpdates` (3), `requireChecks` (true with .github/workflows: a PR waits until its checks show up), `base`. |
+| `maxActive` | Most worktrees open at once (what the machine can run side by side). `hwt new` refuses past it unless `--over-limit`. |
 | `agent` | Default agent command for `hwt new`. |
 | `lang` | `en` or `ko`: the instructions hwt gives agents and its message tags. |
 
@@ -97,8 +98,10 @@ Worktrees
 
 ```
 hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T]
-                 [--task-id ID] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks]
-hwt rm [<branch>] [-f] [-D] [--kill-agents]
+                 [--task-id ID] [--hold REASON] [--resume-from ID [--fork]] [--dir D] [--no-space]
+                 [--no-hooks] [--over-limit]
+hwt rm [<branch>] [-f] [-D] [--kill-agents] [--release-hold]
+hwt hold <worktree|branch> REASON | hold --release <worktree|branch>
 hwt ls | send <worktree> TEXT | title <worktree> TEXT
 ```
 

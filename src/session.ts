@@ -159,6 +159,13 @@ export function recipients(main: string, branch: string, l = readLedger(main)): 
   ];
 }
 
+/** A note about a branch whose work is over (worktree removed, or merge done): left out of status by default. */
+export function noteIsOver(l: Ledger, branch: string | null): boolean {
+  const w = branch ? l.worktrees[branch] : undefined;
+  return !!branch && w?.state !== "active" &&
+    (w?.state === "removed" || (l.merges ?? []).some((x) => x.branch === branch && x.state === "done"));
+}
+
 /** Whether <me> reads message <m>: addressed to it, or from a worktree it owns (or nobody owns). */
 export function readsMessage(l: Ledger, me: string, m: InboxMessage): boolean {
   if (!me) return true;
@@ -168,10 +175,11 @@ export function readsMessage(l: Ledger, me: string, m: InboxMessage): boolean {
 
 /**
  * With "mainSession": true in the main checkout's .hwt.json, refuse unless the caller acts as a main (in the
- * main checkout, or a claimed main in its worktree). Guards new, rm, adopt and a main's own mailbox (inbox, ack,
- * wait): a working session must not mark its main's mail handled.
+ * main checkout, or a claimed main in its worktree). Guards new, rm, adopt, hold, a main's own mailbox (inbox,
+ * ack, wait) and its notes: a working session must not mark its main's mail handled, nor write the main's notes
+ * (it reports a decision with hwt tell "[decision] …" and the main notes it).
  */
-export function mainOnly(main: string, cmd: "new" | "rm" | "adopt" | "inbox" | "ack" | "wait"): void {
+export function mainOnly(main: string, cmd: "new" | "rm" | "adopt" | "inbox" | "ack" | "wait" | "note" | "hold"): void {
   if (process.env.HWT_ANYWHERE) return;
   // A folder child is always a child, config or not: it shares the folder, so nothing else keeps it in its lane.
   if (!isMainSessionRepo(main) && !(process.env.HWT_CHILD && !isGit(main))) return;
