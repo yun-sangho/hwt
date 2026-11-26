@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Fake gh for tests: PRs live in $HWT_FAKE_STATE (prs), and merges happen in the bare repo $HWT_FAKE_ORIGIN, the
 // way GitHub does them: squash = one commit on the base, update-branch = merge the base into the head.
-import { load, save } from "./state.ts";
+import { load, save, type FakePr } from "./state.ts";
 
 const args = process.argv.slice(2);
 const s = load();
@@ -12,35 +12,57 @@ const git = (...a: string[]) => {
   return { ok: p.exitCode === 0, out: p.stdout.toString().trim() };
 };
 const count = (range: string) => Number(git("rev-list", "--count", range).out) || 0;
+const squash = (pr: FakePr) => {
+  const tree = git("merge-tree", "--write-tree", pr.base, pr.head);
+  if (!tree.ok) process.exit(1);
+  const c = git("commit-tree", tree.out.split("\n")[0]!, "-p", pr.base, "-m", `squash ${pr.head}`).out;
+  git("update-ref", `refs/heads/${pr.base}`, c);
+  Object.assign(pr, { state: "MERGED", sha: c });
+};
 
 if (args[0] === "--version") out("gh 0.0.0-fake");
 else if (args[0] === "auth") process.exit(0);
-else if (args[0] === "pr") {
+else if (args[0] === "api" && args[1] === "graphql") {
+  const id = args.find((arg) => arg.startsWith("id=PR_"))?.slice("id=PR_".length);
+  const pr = id ? s.prs?.[id] : null;
+  if (!pr || pr.queueReadError) process.exit(1);
+  if (pr.mergeQueue === "queued" && pr.mergeAfterPolls && --pr.mergeAfterPolls === 0) {
+    squash(pr);
+    delete pr.mergeQueue;
+  }
+  save(s);
+  out({
+    state: pr.state,
+    mergeCommit: pr.sha ? { oid: pr.sha } : null,
+    mergeQueueEntry: pr.mergeQueue === "queued" ? { id: "MQ_" + id } : null,
+    autoMergeRequest: pr.autoMerge ? { enabledAt: "2026-11-26T00:00:00Z" } : null,
+  });
+} else if (args[0] === "pr") {
   const [, sub, n] = args;
   const pr = s.prs?.[n!];
   if (!pr) process.exit(1);
   s.calls.push({ cmd: `gh pr ${sub}`, arg: { n } });
   if (sub === "view") {
-    const jq = args[args.indexOf("--jq") + 1];
-    if (args.includes("--jq") && jq === ".mergeCommit.oid") out(pr.sha ?? "");
-    else {
-      const conflict = pr.state === "OPEN" && !git("merge-tree", "--write-tree", pr.base, pr.head).ok;
-      const behind = pr.state === "OPEN" && count(`${pr.head}..${pr.base}`) > 0;
-      out({
-        state: pr.state,
-        mergeable: conflict ? "CONFLICTING" : "MERGEABLE",
-        mergeStateStatus: conflict ? "DIRTY" : behind ? "BEHIND" : pr.checks === "pending" ? "BLOCKED" : "CLEAN",
-        baseRefName: pr.base,
-        statusCheckRollup: pr.checks === "none" ? [] : [{ name: "ci", conclusion: pr.checks === "pass" ? "SUCCESS" : pr.checks === "fail" ? "FAILURE" : "", state: pr.checks === "pending" ? "PENDING" : "" }],
-      });
-    }
+    const conflict = pr.state === "OPEN" && !git("merge-tree", "--write-tree", pr.base, pr.head).ok;
+    const behind = pr.state === "OPEN" && count(`${pr.head}..${pr.base}`) > 0;
+    out({
+      id: "PR_" + n,
+      url: "https://github.com/test/repo/pull/" + n,
+      state: pr.state,
+      mergeCommit: pr.sha ? { oid: pr.sha } : null,
+      mergeable: conflict ? "CONFLICTING" : "MERGEABLE",
+      mergeStateStatus: conflict ? "DIRTY" : behind ? "BEHIND" : pr.checks === "pending" ? "BLOCKED" : "CLEAN",
+      baseRefName: pr.base,
+      statusCheckRollup: pr.checks === "none" ? [] : [{ name: "ci", conclusion: pr.checks === "pass" ? "SUCCESS" : pr.checks === "fail" ? "FAILURE" : "", state: pr.checks === "pending" ? "PENDING" : "" }],
+    });
   } else if (sub === "merge") {
     if (pr.state !== "OPEN" || pr.checks !== "pass") process.exit(1);
-    const tree = git("merge-tree", "--write-tree", pr.base, pr.head);
-    if (!tree.ok) process.exit(1);
-    const c = git("commit-tree", tree.out.split("\n")[0]!, "-p", pr.base, "-m", `squash ${pr.head}`).out;
-    git("update-ref", `refs/heads/${pr.base}`, c);
-    Object.assign(pr, { state: "MERGED", sha: c });
+    if (pr.mergeQueue) {
+      pr.mergeQueue = "queued";
+      save(s);
+      process.exit(0);
+    }
+    squash(pr);
   } else if (sub === "update-branch") {
     const tree = git("merge-tree", "--write-tree", pr.head, pr.base);
     if (!tree.ok) process.exit(1);

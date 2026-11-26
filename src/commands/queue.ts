@@ -148,12 +148,14 @@ export function cmdMq(args: string[]): void {
       const here = toplevel();
       if (!here || samePath(here, main)) die("mq add runs in the working worktree (it queues that branch)");
       const b = currentBranch();
-      const id = shortId("M");
+      const initialId = shortId("M");
+      let id = initialId;
       let kept: number | undefined;
       updateLedger(main, (l) => {
         const merges = l.merges ?? [];
         const flying = merges.find((m) => m.branch === b && IN_FLIGHT.includes(m.state));
         if (flying) die(`${b} is ${flying.state} (${flying.id}); wait for it`);
+        for (let suffix = 2; merges.some((m) => m.id === id); suffix++) id = `${initialId}-${suffix}`;
         // A branch queued again (after a return or failure) keeps its place in line, and replaces the old request.
         const old = merges.filter((m) => m.branch === b && [...WAITING, "returned", "failed"].includes(m.state));
         kept = old.map((m) => m.seq).find((x) => x !== undefined);
