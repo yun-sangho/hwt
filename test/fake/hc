@@ -25,7 +25,9 @@ switch (cmd) {
   case "get": {
     const t = find(rest[0]);
     if (!t) process.exit(1);
-    out(t);
+    // Like the real hc: get shows labels but not the agent (only ls says which program runs).
+    const { agent: _agent, ...shown } = t;
+    out(shown);
     break;
   }
   case "label": {

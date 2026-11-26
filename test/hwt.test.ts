@@ -571,6 +571,12 @@ describe("merge queue runner", () => {
     checks(1, "pass");
     expect(run().merged).toEqual(["feat/a"]);
     expect(item("feat/b")).toMatchObject({ state: "updating" });
+    // Another merge lands while b waits: b is updated again, and that shows in its history.
+    const wc = work("feat/c", 3);
+    void wc;
+    expect(run().merged).toEqual(["feat/c"]);
+    expect(item("feat/b")).toMatchObject({ state: "updating", updates: 2 });
+    expect(item("feat/b").history.filter((h: { to: string }) => h.to === "updating")).toHaveLength(2);
     checks(2, "pass");
     expect(run().merged).toEqual(["feat/b"]);
     // A live runner holds the lease: a second one refuses.
@@ -585,6 +591,22 @@ describe("merge queue runner", () => {
     const id = item("feat/a").id;
     expect(hwt(["mq", "set", id, "queued"]).err).toContain("done → queued is not allowed");
     expect(hwt(["mq", "set", id, "queued", "--force"]).code).toBe(0);
+  });
+
+  test("with CI workflows, a PR whose checks haven't shown up yet waits", () => {
+    sh(["mkdir", "-p", ".github/workflows"]);
+    writeFileSync(join(repo, ".github", "workflows", "ci.yml"), "on: push\n");
+    sh(["git", "add", "-A"]);
+    sh(["git", "commit", "-qm", "ci"]);
+    sh(["git", "push", "-q", "origin", "main"]);
+    work("feat/n", 1);
+    checks(1, "none");
+    const r = run();
+    expect(r.merged).toEqual([]);
+    expect(r.waiting[0]).toMatchObject({ branch: "feat/n", step: { act: "wait", why: "no CI checks reported yet" } });
+    // Once CI shows up and passes, it merges.
+    checks(1, "pass");
+    expect(run().merged).toEqual(["feat/n"]);
   });
 
   test("a working session can't run the queue", () => {
@@ -640,6 +662,7 @@ describe("plain folder (no git)", () => {
     // rm closes its space and terminal only; the folder (and the main's terminal there) stay.
     expect(hwt(["rm", "docs"], at(m1)).err).toContain("agent is live");
     expect(json(hwt(["rm", "docs", "--kill-agents"], at(m1)))).toMatchObject({ spaces_closed: 1, terminals_killed: 1 });
+    expect(hwt(["rm", "docs", "--kill-agents"], at(m1)).err).toContain("already removed");
     expect(existsSync(plain)).toBe(true);
     expect(fake().terminals.find((t) => t.address === "m1")!.state).toBe("live");
     expect(ledgerOf().worktrees.docs.state).toBe("removed");

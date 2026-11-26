@@ -30,6 +30,11 @@ export interface MergeQueueConfig {
   cleanup?: boolean;
   /** Times the runner brings a PR up to date with its base before returning it. Default 3. */
   maxUpdates?: number;
+  /**
+   * A PR with no CI checks reported waits instead of merging. Default: true when the repo has
+   * .github/workflows (right after a push, GitHub shows no checks until CI starts).
+   */
+  requireChecks?: boolean;
 }
 
 /** .hwt.json at the repo root. */

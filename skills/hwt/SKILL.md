@@ -114,7 +114,7 @@ hwt new docs --task "…" [--dir sub] # plain folder: a child in this folder (or
 - `setup`: once, only in checkouts `hwt new` creates, in the new space's terminal before the agent (with `--no-space`, right away). Failing setup only warns. `--no-hooks` skips it. Checkouts made elsewhere get no setup; the repo's scripts should prepare themselves
 - No teardown: `rm` only removes. What a checkout leaves behind is reclaimed by the repo's gc, which the main runs after `rm`
 - `mergeApproval`: matching paths or more lines → the person approves the merge
-- `mergeQueue`: how `mq run` merges (`method`), checks the deploy (`verify`, env `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` s), cleans up (`cleanup`, `gc`), how often it updates a behind PR (`maxUpdates`), and the `base` branch when a PR doesn't say
+- `mergeQueue`: how `mq run` merges (`method`), checks the deploy (`verify`, env `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` s), cleans up (`cleanup`, `gc`), how often it updates a behind PR (`maxUpdates`), whether a PR with no CI checks reported waits (`requireChecks`, default: the repo has .github/workflows), and the `base` branch when a PR doesn't say
 
 ## hwt rm
 

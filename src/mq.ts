@@ -7,6 +7,7 @@
 //   runner    `hwt mq run`: one runner per repo at a time (a lease in the ledger), one merge at a time; each
 //             merge goes through the deploy check and cleanup before the next one starts.
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { hostname } from "node:os";
 import { langFor, mainConfig, type MergeQueueConfig } from "./config.ts";
 import { currentBranch, git, gitOut, isDirty } from "./git.ts";
@@ -201,7 +202,7 @@ export type Step =
   | { act: "drop"; why: string };
 
 /** The next step for an item in line. Pure: the runner does what it says. */
-export function plan(m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: string[] }): Step {
+export function plan(m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: string[]; requireChecks?: boolean }): Step {
   if (o.blockedBy.length) return { act: "blocked", why: `after ${o.blockedBy.join(", ")}` };
   if (m.pr == null) return { act: "return", why: "no PR: open one, then hwt mq add --pr <n>" };
   if (!c.pr) return { act: "wait", why: "can't read the PR (gh)" };
@@ -222,6 +223,7 @@ export function plan(m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: st
     return { act: "update", why: `${c.behind} commit(s) behind ${c.base}` };
   }
   if (c.pr.ci === "pending" || c.pr.mergeable === "UNKNOWN") return { act: "wait", why: "CI running" };
+  if (c.pr.ci === null && o.requireChecks) return { act: "wait", why: "no CI checks reported yet" };
   if (c.pr.mergeStateStatus === "BLOCKED") return { act: "ask", why: "branch protection blocks the merge (review?)" };
   return { act: "merge" };
 }
@@ -307,11 +309,12 @@ export interface RunReport {
   dry_run?: boolean;
 }
 
-const queueConfig = (main: string): Required<Pick<MergeQueueConfig, "method" | "verifyTimeout" | "cleanup" | "maxUpdates">> & MergeQueueConfig => ({
+export const queueConfig = (main: string): Required<Pick<MergeQueueConfig, "method" | "verifyTimeout" | "cleanup" | "maxUpdates" | "requireChecks">> & MergeQueueConfig => ({
   method: "squash",
   verifyTimeout: 1800,
   cleanup: true,
   maxUpdates: 3,
+  requireChecks: existsSync(join(main, ".github", "workflows")),
   ...mainConfig(main).mergeQueue,
 });
 
@@ -333,10 +336,9 @@ export function runQueue(main: string, o: RunOptions): RunReport {
       if (!x) return;
       const from = x.state;
       change?.(x);
-      if (from !== to) {
-        move(x, to, o.by, why);
-        report.events.push({ id, branch: x.branch, from, to, why });
-      } else x.why = why;
+      // A repeat (updated again while updating) is a step too: it goes in the history and the report.
+      move(x, to, o.by, why);
+      report.events.push({ id, branch: x.branch, from, to, why });
     });
   };
 
@@ -499,7 +501,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     for (const x of ordered(l).filter((y) => y.state === "queued" || y.state === "updating" || y.state === "waiting_user")) {
       if (x.state === "waiting_user" && !x.approved) continue;
       const c = mqChecks(main, x, l);
-      const s = plan(x, c, { maxUpdates: cfg.maxUpdates, blockedBy: blockedBy(l, x) });
+      const s = plan(x, c, { maxUpdates: cfg.maxUpdates, requireChecks: cfg.requireChecks, blockedBy: blockedBy(l, x) });
       if (o.dryRun) {
         report.waiting.push({ id: x.id, branch: x.branch, state: x.state, step: s });
         continue;
@@ -521,7 +523,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
         state: x.state,
         step: x.state === "waiting_user" && !x.approved
           ? ({ act: "ask", why: x.why ?? "" } as Step)
-          : plan(x, mqChecks(main, x, l), { maxUpdates: cfg.maxUpdates, blockedBy: blockedBy(l, x) }),
+          : plan(x, mqChecks(main, x, l), { maxUpdates: cfg.maxUpdates, requireChecks: cfg.requireChecks, blockedBy: blockedBy(l, x) }),
       }));
   };
 

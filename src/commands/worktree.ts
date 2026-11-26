@@ -195,8 +195,10 @@ function removeFolderChild(main: string, target: string | undefined, o: RmOption
   const key = target ?? (childKey(main, l) || die("name the child to remove"));
   const hit = findChild(l, key) ?? die(`no child ${key}`);
   const [name, w] = hit;
+  if (w.state !== "active") die(`child ${name} was already removed`);
   const me = herdr.myTerminal();
-  const t = w.terminal ? herdr.terminal(w.terminal) : null;
+  // From hc ls, not hc get: only the list says which program (agent) a terminal runs.
+  const t = w.terminal ? herdr.terminals().find((x) => x.address === w.terminal) : undefined;
   const live = t && herdr.isLive(t) && t.address !== me ? t : null;
   if (live && herdr.isAgent(live) && !o.killAgents) {
     die(`${name}'s agent is live in ${live.address} (check it with hc read ${live.address}; pass --kill-agents to remove anyway)`);

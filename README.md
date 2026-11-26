@@ -74,7 +74,7 @@ hwt init --main-session     # …and the main-session workflow
 | `setup` | Runs once in a checkout `hwt new` creates, in the new space's terminal before the agent starts. Herdr starts that terminal through your login shell, so your PATH (nvm, …) is there. Failing setup is reported, never fatal. |
 | `mainSession` | `new`/`rm` only from a main session (the main checkout, or a worktree that claimed); working sessions report to their own main with `hwt tell`. |
 | `mergeApproval` | Merges touching these globs, or bigger than `maxLines`, need the person's yes. |
-| `mergeQueue` | How `hwt mq run` drains the queue: `method` (squash), `verify` (deploy check), `verifyTimeout`, `cleanup` (true), `gc`, `maxUpdates` (3), `base`. |
+| `mergeQueue` | How `hwt mq run` drains the queue: `method` (squash), `verify` (deploy check), `verifyTimeout`, `cleanup` (true), `gc`, `maxUpdates` (3), `requireChecks` (true with .github/workflows: a PR waits until its checks show up), `base`. |
 | `agent` | Default agent command for `hwt new`. |
 | `lang` | `en` or `ko`: the instructions hwt gives agents and its message tags. |
 

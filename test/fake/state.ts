@@ -27,7 +27,7 @@ export interface FakePr {
   head: string;
   base: string;
   state: "OPEN" | "MERGED" | "CLOSED";
-  checks: "pass" | "fail" | "pending";
+  checks: "pass" | "fail" | "pending" | "none";
   sha?: string;
 }
 

@@ -1,7 +1,7 @@
 // hwt task … (ledger.tasks) and hwt mq … (ledger.merges)
 import { existsSync } from "node:fs";
 import { parse } from "../args.ts";
-import { langFor, mainConfig } from "../config.ts";
+import { langFor } from "../config.ts";
 import { currentBranch, samePath, toplevel, touchedPaths } from "../git.ts";
 import { childKey, isGit, projectRoot, requireGit } from "../project.ts";
 import * as herdr from "../herdr.ts";
@@ -11,7 +11,7 @@ import { die, printJson, shortId, stamp } from "../util.ts";
 import { tell } from "./session.ts";
 import { removeWorktree } from "./worktree.ts";
 import {
-  blockedBy, IN_FLIGHT, leaseLive, move, mqChecks, nextSeq, OPEN, ordered, plan, runQueue, STATES, WAITING,
+  blockedBy, IN_FLIGHT, leaseLive, move, mqChecks, nextSeq, OPEN, ordered, plan, queueConfig, runQueue, STATES, WAITING,
 } from "../mq.ts";
 import type { Merge } from "../ledger.ts";
 import { actsAsMain, ownerOf, owns, selfId } from "../session.ts";
@@ -199,14 +199,14 @@ export function cmdMq(args: string[]): void {
       const lease = leaseLive(l.mq?.lease) ? l.mq!.lease : null;
       const busy = ordered(l).find((m) => IN_FLIGHT.includes(m.state));
       if (busy) return printJson({ busy, runner: lease }, true);
-      const maxUpdates = mainConfig(main).mergeQueue?.maxUpdates ?? 3;
+      const { maxUpdates, requireChecks } = queueConfig(main);
       const mineInLine = ordered(l).filter((m) => m.state === "queued" || m.state === "updating").filter((m) => owns(me, ownerOf(l, m.branch)));
       const next = mineInLine[0];
       const checks = next ? mqChecks(main, next, l) : null;
       return printJson(
         {
           next: next && checks
-            ? { ...next, checks, plan: plan(next, checks, { maxUpdates, blockedBy: blockedBy(l, next) }), may_merge: checks.approval === "auto" || next.approved != null }
+            ? { ...next, checks, plan: plan(next, checks, { maxUpdates, requireChecks, blockedBy: blockedBy(l, next) }), may_merge: checks.approval === "auto" || next.approved != null }
             : null,
           waiting_user: ordered(l)
             .filter((m) => m.state === "waiting_user" && owns(me, ownerOf(l, m.branch)))
