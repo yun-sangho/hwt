@@ -1,15 +1,18 @@
 // End-to-end tests: a throwaway git repo, the real CLI, and fake herdr-app/hc on PATH.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shellWords, slug } from "../src/util.ts";
-import type { FakeState } from "./fake/state.ts";
+import type { FakePr, FakeState } from "./fake/state.ts";
+
+setDefaultTimeout(30_000);
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const FAKE = join(import.meta.dir, "fake");
 chmodSync(join(FAKE, "herdr-app"), 0o755);
 chmodSync(join(FAKE, "hc"), 0o755);
+chmodSync(join(FAKE, "gh"), 0o755);
 
 let dir: string;
 let repo: string;
@@ -100,7 +103,7 @@ describe("new / rm", () => {
     expect(argv[4]).toBe("claude");
     expect(argv[5]).toBe("--session-id");
     expect(argv[6]).toBe(o.session);
-    expect(argv.at(-1)).toStartWith("do 'it'\n\n[hwt] 메인 세션에는");
+    expect(argv.at(-1)).toStartWith("do 'it'\n\n[hwt] 메인 세션에 진행 상황");
     expect(fake().terminals[0]!.labels["hwt.worktree"]).toBe("feat-y");
     expect(ledger().worktrees["feat/y"]).toMatchObject({ terminal: "t100", name: "feat-y", agent: "claude", title: "Y 작업" });
   });
@@ -162,55 +165,79 @@ describe("main-session workflow", () => {
     expect(hwt(["task", "done", "T0"]).code).toBe(1);
   });
 
-  test("tell from a worktree: inbox first, then the labelled main session; ack", () => {
-    config({ mainSession: true });
-    const wt = json(hwt(["new", "feat/w", "--no-space"])).path;
-    // The main session runs in a terminal labelled hwt.main=repo.
+  const terminal = (address: string, cwd: string, created_ms = 1) => {
     const s = fake();
-    s.terminals.push({ address: "t1", name: null, agent: "claude-code", status: "done", state: "live", cwd: repo, labels: {}, parent: null, created_ms: 1 });
+    s.terminals.push({ address, name: null, agent: "claude-code", status: "done", state: "live", cwd, labels: {}, parent: null, created_ms });
     writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
-    expect(json(hwt(["claim"], { env: { HC_TERMINAL_ID: "t1" } }))).toMatchObject({ main: "t1", label: "hwt.main=repo" });
+  };
+  const as = (t: string) => ({ env: { HC_TERMINAL_ID: t } });
+
+  test("tell from a worktree: inbox first, then the main that made it; ack", () => {
+    config({ mainSession: true });
+    terminal("t1", repo);
+    expect(json(hwt(["claim"], as("t1")))).toMatchObject({ id: "t1", terminal: "t1", path: repo, promoted_from: null });
+    const wt = json(hwt(["new", "feat/w", "--no-space"], as("t1"))).path;
+    expect(ledger().worktrees["feat/w"].owner).toBe("t1");
     const r = json(hwt(["tell", "[merge request]", "please"], { cwd: wt, env: { CLAUDE_CODE_SESSION_ID: "abc" } }));
-    expect(r).toMatchObject({ main: "t1", delivered: true, inbox: true });
+    expect(r).toMatchObject({ main: "t1", owner: "t1", delivered: true, inbox: true });
     expect(fake().sent[0]!.text).toBe(`[merge request] please — feat-w (hwt inbox ${r.id})`);
     expect(ledger().worktrees["feat/w"].session).toBe("abc");
-    expect(hwt(["inbox"]).out.trim().split("\n")).toHaveLength(1);
-    hwt(["ack", "--all"]);
-    expect(hwt(["inbox"]).out).toBe("");
-    expect(hwt(["inbox", "--all"]).out.trim().split("\n")).toHaveLength(1);
+    expect(hwt(["inbox"], as("t1")).out.trim().split("\n")).toHaveLength(1);
+    hwt(["ack", "--all"], as("t1"));
+    expect(hwt(["inbox"], as("t1")).out).toBe("");
+    expect(hwt(["inbox", "--all"], as("t1")).out.trim().split("\n")).toHaveLength(1);
   });
 
-  test("only claim makes a terminal the main; new/rm leave it, a new claim moves it", () => {
+  test("several mains: each keeps its label, gets only its own worktrees' mail, tasks and merges", () => {
     config({ mainSession: true });
-    const s = fake();
-    for (const address of ["t1", "t2"])
-      s.terminals.push({ address, name: null, agent: "claude-code", status: "done", state: "live", cwd: repo, labels: {}, parent: null, created_ms: address === "t1" ? 1 : 2 });
-    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
+    terminal("t1", repo, 1);
+    terminal("t2", repo, 2);
     const label = (t: string) => fake().terminals.find((x) => x.address === t)!.labels["hwt.main"];
-    hwt(["claim"], { env: { HC_TERMINAL_ID: "t1" } });
-    // Another terminal in the main checkout makes and removes a worktree: the main stays t1.
-    expect(hwt(["new", "feat/c", "--no-space"], { env: { HC_TERMINAL_ID: "t2" } }).code).toBe(0);
-    expect(hwt(["rm", "feat/c", "-D", "--no-hooks"], { env: { HC_TERMINAL_ID: "t2" } }).code).toBe(0);
-    expect(label("t2")).toBeUndefined();
-    expect(hwt(["main"]).out.trim()).toBe("t1");
-    // An explicit claim moves the label: one terminal holds it.
-    hwt(["claim"], { env: { HC_TERMINAL_ID: "t2" } });
-    expect(label("t1")).toBeUndefined();
-    expect(label("t2")).toBe("repo");
-    expect(ledger().main.terminal).toBe("t2");
+    hwt(["claim"], as("t1"));
+    hwt(["claim"], as("t2"));
+    expect([label("t1"), label("t2")]).toEqual(["repo", "repo"]);
+    const w1 = json(hwt(["new", "feat/a", "--no-space"], as("t1"))).path;
+    const w2 = json(hwt(["new", "feat/b", "--no-space"], as("t2"))).path;
+    hwt(["tell", "[decision] a"], { cwd: w1 });
+    hwt(["tell", "[decision] b"], { cwd: w2 });
+    expect(fake().sent.map((m) => [m.to, m.text.split(" —")[0]])).toEqual([["t1", "[decision] a"], ["t2", "[decision] b"]]);
+    const inbox = (t: string) => hwt(["inbox"], as(t)).out.trim().split("\n").map((l) => JSON.parse(l).text);
+    expect(inbox("t1")).toEqual(["[decision] a"]);
+    expect(inbox("t2")).toEqual(["[decision] b"]);
+    // ack --all acks only one's own mail.
+    hwt(["ack", "--all"], as("t1"));
+    expect(inbox("t2")).toEqual(["[decision] b"]);
+    // Tasks: a main's, and a worktree's proposal, belong to that main; --every-main shows the others'.
+    hwt(["task", "add", "mine"], as("t1"));
+    hwt(["task", "add", "proposal"], { cwd: w2 });
+    const titles = (args: string[], t: string) => json(hwt(["task", "ls", ...args], as(t))).map((x: { title: string }) => x.title);
+    expect(titles([], "t1")).toEqual(["mine"]);
+    expect(titles([], "t2")).toEqual(["proposal"]);
+    expect(titles(["--every-main"], "t1")).toEqual(["mine", "proposal"]);
+    // One merge queue: t2's merge in flight blocks t1, and t1 never picks t2's item.
+    for (const w of [w1, w2]) {
+      writeFileSync(join(w, "f"), w);
+      sh(["git", "add", "."], w);
+      sh(["git", "commit", "-qm", "f"], w);
+    }
+    const m1 = json(hwt(["mq", "add"], { cwd: w1 })).merge;
+    const m2 = json(hwt(["mq", "add"], { cwd: w2 })).merge;
+    expect(json(hwt(["mq", "next"], as("t2"))).next.id).toBe(m2);
+    expect(json(hwt(["mq", "next"], as("t1"))).next.id).toBe(m1);
+    hwt(["mq", "set", m2, "merging"], as("t2"));
+    expect(json(hwt(["mq", "next"], as("t1"))).busy.id).toBe(m2);
+    const st = json(hwt(["status"], as("t1")));
+    expect(st.mains.map((x: { id: string; me: boolean }) => [x.id, x.me])).toEqual([["t1", true], ["t2", false]]);
+    expect(st.worktrees.map((x: { branch: string; mine: boolean }) => [x.branch, x.mine])).toEqual([["feat/a", true], ["feat/b", false]]);
   });
 
-  test("the main is found by label or ledger, never by a terminal that merely started in the repo", () => {
+  test("a main is found by its ledger record, never by a terminal that merely started in the repo; adopt", () => {
     config({ mainSession: true });
-    const wt = json(hwt(["new", "feat/r", "--no-space"])).path;
-    const s = fake();
-    // t1 is the main but its terminal started elsewhere; t9 is an unrelated agent that started in the repo.
-    s.terminals.push(
-      { address: "t1", name: null, agent: "claude-code", status: "done", state: "live", cwd: dir, labels: {}, parent: null, created_ms: 1 },
-      { address: "t9", name: null, agent: "codex", status: "done", state: "live", cwd: repo, labels: {}, parent: null, created_ms: 2 },
-    );
-    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
-    hwt(["claim"], { env: { HC_TERMINAL_ID: "t1" } });
+    // t1 is a main but its terminal started elsewhere; t9 is an unrelated agent that started in the repo.
+    terminal("t1", dir, 1);
+    terminal("t9", repo, 2);
+    hwt(["claim"], as("t1"));
+    const wt = json(hwt(["new", "feat/r", "--no-space"], as("t1"))).path;
     const refused = hwt(["inbox"], { cwd: wt });
     expect(refused.err).toContain("main session now: t1");
     expect(refused.err).not.toContain("t9");
@@ -223,8 +250,83 @@ describe("main-session workflow", () => {
     const u = fake();
     u.terminals.find((x) => x.address === "t1")!.state = "exited";
     writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(u));
-    expect(json(hwt(["tell", "[decision] b"], { cwd: wt }))).toMatchObject({ main: null, delivered: false, inbox: true });
+    expect(json(hwt(["tell", "[decision] b"], { cwd: wt }))).toMatchObject({ main: null, owner: "t1", delivered: false, inbox: true });
     expect(fake().sent.map((m) => m.to)).toEqual(["t1"]);
+    // Another main takes the worktree over, with its unread mail.
+    terminal("t2", repo, 3);
+    hwt(["claim"], as("t2"));
+    expect(hwt(["inbox"], as("t2")).out).toBe("");
+    expect(json(hwt(["adopt", "feat-r"], as("t2")))).toMatchObject({ owner: "t2", adopted: [{ branch: "feat/r", from: "t1" }] });
+    expect(hwt(["inbox"], as("t2")).out.trim().split("\n")).toHaveLength(2);
+    expect(json(hwt(["tell", "[decision] c"], { cwd: wt }))).toMatchObject({ main: "t2", delivered: true });
+    expect(hwt(["adopt", "nope"], as("t2")).code).toBe(1);
+  });
+
+  test("a new agent session in a main's terminal takes over its worktrees", () => {
+    config({ mainSession: true });
+    terminal("t1", repo);
+    hwt(["claim"], { env: { HC_TERMINAL_ID: "t1", CLAUDE_CODE_SESSION_ID: "s1" } });
+    hwt(["new", "feat/k", "--no-space"], { env: { HC_TERMINAL_ID: "t1", CLAUDE_CODE_SESSION_ID: "s1" } });
+    expect(ledger().worktrees["feat/k"].owner).toBe("s1");
+    const c = json(hwt(["claim"], { env: { HC_TERMINAL_ID: "t1", CLAUDE_CODE_SESSION_ID: "s2" } }));
+    expect(c).toMatchObject({ id: "s2", took_over: ["s1"] });
+    expect(Object.keys(ledger().mains)).toEqual(["s2"]);
+    expect(ledger().worktrees["feat/k"].owner).toBe("s2");
+  });
+
+  test("a working session becomes a main of its own with claim in its worktree", () => {
+    config({ mainSession: true });
+    terminal("t1", repo);
+    hwt(["claim"], as("t1"));
+    const wt = json(hwt(["new", "feat/p", "--no-space"], as("t1"))).path;
+    terminal("w1", wt, 2);
+    // Before the claim it is a working session: no worktrees of its own.
+    expect(hwt(["new", "feat/p-sub", "--no-space"], { cwd: wt, ...as("w1") }).code).toBe(1);
+    expect(json(hwt(["claim"], { cwd: wt, ...as("w1") }))).toMatchObject({ id: "w1", path: wt, promoted_from: "t1" });
+    expect(ledger().worktrees["feat/p"].owner).toBe("w1");
+    // Its old main has it in its log, but isn't interrupted: there is nothing for it to decide.
+    expect(fake().sent.filter((m) => m.to === "t1")).toEqual([]);
+    expect(hwt(["inbox"], as("t1")).out).toBe("");
+    expect(hwt(["inbox", "--log"], as("t1")).out).toContain("[now a main] feat-p (feat/p)");
+    // Now it makes worktrees of its own, off its branch, and their mail comes to it.
+    const sub = json(hwt(["new", "feat/p-sub", "--no-space"], { cwd: wt, ...as("w1") }));
+    expect(sub.owner).toBe("w1");
+    expect(json(hwt(["tell", "[decision] x"], { cwd: sub.path }))).toMatchObject({ main: "w1", delivered: true });
+    expect(hwt(["inbox"], { cwd: wt, ...as("w1") }).out).toContain("[decision] x");
+    expect(hwt(["inbox"], as("t1")).out).not.toContain("[decision] x");
+    // Its own merge request is its own, not t1's.
+    writeFileSync(join(wt, "g"), "g");
+    sh(["git", "add", "."], wt);
+    sh(["git", "commit", "-qm", "g"], wt);
+    hwt(["mq", "add"], { cwd: wt, ...as("w1") });
+    expect(json(hwt(["mq", "next"], as("t1"))).next).toBeNull();
+    expect(json(hwt(["mq", "next"], { cwd: wt, ...as("w1") })).next.branch).toBe("feat/p");
+  });
+
+  test("mains prune: forgets gone mains, keeps ones that own worktrees unless --release", () => {
+    config({ mainSession: true });
+    terminal("t1", repo, 1);
+    terminal("t2", repo, 2);
+    terminal("t3", repo, 3);
+    for (const t of ["t1", "t2", "t3"]) hwt(["claim"], as(t));
+    hwt(["new", "feat/o", "--no-space"], as("t2"));
+    hwt(["note", "t2's note"], as("t2"));
+    const s = fake();
+    for (const t of s.terminals) if (t.address !== "t1") t.state = "exited";
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
+    expect(json(hwt(["mains"], as("t1"))).map((m: { id: string; live: boolean; owns: string[] }) => [m.id, m.live, m.owns])).toEqual([
+      ["t1", true, []], ["t2", false, ["feat/o"]], ["t3", false, []],
+    ]);
+    expect(json(hwt(["mains", "prune", "--dry-run"], as("t1")))).toMatchObject({ pruned: ["t3"], dry_run: true });
+    expect(Object.keys(ledger().mains)).toEqual(["t1", "t2", "t3"]);
+    expect(json(hwt(["mains", "prune"], as("t1")))).toMatchObject({ pruned: ["t3"], kept_owning_worktrees: [{ id: "t2", owns: ["feat/o"] }] });
+    expect(Object.keys(ledger().mains)).toEqual(["t1", "t2"]);
+    expect(json(hwt(["mains", "prune", "--release"], as("t1")))).toMatchObject({ pruned: ["t2"], released: ["feat/o"] });
+    expect(Object.keys(ledger().mains)).toEqual(["t1"]);
+    expect(ledger().worktrees["feat/o"].owner).toBeNull();
+    // Unowned now: t1 sees its note and its worktree.
+    expect(json(hwt(["status"], as("t1"))).notes.map((n: { text: string }) => n.text)).toEqual(["t2's note"]);
+    expect(hwt(["mains", "bogus"]).code).toBe(1);
   });
 
   test("merge queue: add from the worktree, approval paths, approve, set", () => {
@@ -308,6 +410,305 @@ describe("main-session workflow", () => {
   });
 });
 
+describe("merge queue runner", () => {
+  let origin: string;
+  const t1 = { env: { HC_TERMINAL_ID: "t1" } };
+  const setFake = (f: (s: FakeState) => void) => {
+    const s = fake();
+    f(s);
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
+  };
+  const pr = (n: number, head: string, checks: FakePr["checks"] = "pass") =>
+    setFake((s) => {
+      s.prs = { ...s.prs, [n]: { head, base: "main", state: "OPEN", checks } };
+    });
+  const checks = (n: number, c: FakePr["checks"]) => setFake((s) => void (s.prs![n]!.checks = c));
+  /** A worktree owned by t1 with one pushed commit and a PR. */
+  const work = (branch: string, n: number, file = branch.replace("/", "-"), body = "x\n") => {
+    const wt = json(hwt(["new", branch, "--no-space"], t1)).path;
+    writeFileSync(join(wt, file), body);
+    sh(["git", "add", "."], wt);
+    sh(["git", "commit", "-qm", branch], wt);
+    sh(["git", "push", "-q", "-u", "origin", branch], wt);
+    pr(n, branch);
+    expect(hwt(["mq", "add", "--pr", String(n)], { cwd: wt }).code).toBe(0);
+    return wt;
+  };
+  const originMain = (f: string) => sh(["git", "-C", origin, "show", `main:${f}`]);
+  const run = (...a: string[]) => json(hwt(["mq", "run", ...a], t1));
+  const item = (branch: string) => ledger().merges.filter((m: { branch: string; state: string }) => m.branch === branch && m.state !== "dropped").at(-1);
+
+  beforeEach(() => {
+    origin = join(dir, "origin.git");
+    sh(["git", "init", "-q", "--bare", "-b", "main", origin], dir);
+    sh(["git", "remote", "add", "origin", origin]);
+    sh(["git", "push", "-q", "-u", "origin", "main"]);
+    sh(["git", "remote", "set-head", "origin", "main"]);
+    env.HWT_FAKE_ORIGIN = origin;
+    config({ mainSession: true, mergeApproval: { paths: ["db/**"] } });
+    sh(["git", "push", "-q", "origin", "main"]);
+    setFake((s) => s.terminals.push({ address: "t1", name: null, agent: "claude-code", status: "done", state: "live", cwd: repo, labels: {}, parent: null, created_ms: 1 }));
+    hwt(["claim"], t1);
+  });
+
+  test("merges, verifies and cleans up; the main checkout follows the base; the task is done", () => {
+    config({ mainSession: true, mergeQueue: { verify: "test -n \"$HWT_MQ_SHA\"", gc: "touch gc-ran" } });
+    sh(["git", "push", "-q", "origin", "main"]);
+    const task = json(hwt(["task", "add", "A"], t1)).task;
+    const wt = json(hwt(["new", "feat/a", "--no-space", "--task-id", task], t1)).path;
+    writeFileSync(join(wt, "a"), "a\n");
+    sh(["git", "add", "."], wt);
+    sh(["git", "commit", "-qm", "a"], wt);
+    sh(["git", "push", "-q", "-u", "origin", "feat/a"], wt);
+    pr(1, "feat/a");
+    hwt(["mq", "add", "--pr", "1"], { cwd: wt });
+    const r = run();
+    expect(r.merged).toEqual(["feat/a"]);
+    expect(r.events.map((e: { to: string }) => e.to)).toEqual(["merging", "verifying", "cleaning", "done"]);
+    expect(originMain("a").out).toBe("a\n");
+    expect(existsSync(wt)).toBe(false);
+    expect(sh(["git", "-C", origin, "rev-parse", "--verify", "-q", "feat/a"]).code).not.toBe(0);
+    expect(existsSync(join(repo, "gc-ran"))).toBe(true);
+    expect(readFileSync(join(repo, "a"), "utf8")).toBe("a\n"); // fast-forwarded
+    expect(json(hwt(["task", "ls", "--all"], t1))[0].state).toBe("done");
+    expect(json(hwt(["mq", "log", item("feat/a").id])).history.map((h: { to: string }) => h.to)).toEqual(["queued", "merging", "verifying", "cleaning", "done"]);
+    expect(ledger().mq.lease).toBeNull();
+  });
+
+  test("priority first; the next one is behind, gets updated, waits for CI, then merges", () => {
+    const wa = work("feat/a", 1);
+    const wb = work("feat/b", 2);
+    hwt(["mq", "prio", item("feat/b").id, "5"]);
+    const ls = json(hwt(["mq", "ls"]));
+    expect(ls.map((m: { branch: string; place: number }) => [m.branch, m.place])).toEqual([["feat/b", 1], ["feat/a", 2]]);
+    let r = run();
+    // b merges first; a is now behind main: updated, and CI runs again, so this run ends with a waiting.
+    expect(r.merged).toEqual(["feat/b"]);
+    expect(item("feat/a")).toMatchObject({ state: "updating", updates: 1 });
+    expect(r.waiting[0]).toMatchObject({ branch: "feat/a", step: { act: "wait", why: "CI running" } });
+    expect(fake().calls.some((c) => c.cmd === "gh pr update-branch")).toBe(true);
+    expect(existsSync(wa)).toBe(true);
+    expect(existsSync(wb)).toBe(false);
+    checks(1, "pass");
+    r = run();
+    expect(r.merged).toEqual(["feat/a"]);
+    expect([originMain("feat-a").code, originMain("feat-b").code]).toEqual([0, 0]);
+  });
+
+  test("conflicts and failed CI go back to the worktree's main; a re-add keeps its place", () => {
+    const wa = work("feat/a", 1, "same", "a\n");
+    work("feat/b", 2, "same", "b\n");
+    work("feat/c", 3);
+    checks(3, "fail");
+    const r = run();
+    expect(r.merged).toEqual(["feat/a"]);
+    expect(item("feat/b")).toMatchObject({ state: "returned" });
+    expect(item("feat/b").why).toContain("conflicts with origin/main");
+    expect(item("feat/c").why).toBe("CI failed: ci");
+    // Returns are the working sessions' to fix: the main only has them in its log, not in front of it.
+    const log = hwt(["inbox", "--log"], t1).out;
+    expect(log).toContain("[rebase request]");
+    expect(log).toContain("[merge returned]");
+    expect(log).toContain("[merge request]");
+    expect(log).not.toContain("[base updated]");
+    expect(hwt(["inbox"], t1).out).toBe("");
+    expect(fake().sent.filter((m) => m.to === "t1")).toEqual([]);
+    expect(json(hwt(["status"], t1)).log_recent.at(-1)).toContain("[merge returned]");
+    expect(existsSync(wa)).toBe(false);
+    // c fixes CI and queues again: it keeps its place in line.
+    const seq = item("feat/c").seq;
+    checks(3, "pass");
+    const again = json(hwt(["mq", "add", "--pr", "3"], { cwd: ledger().worktrees["feat/c"].path }));
+    expect(again.place_kept).toBe(true);
+    expect(item("feat/c").seq).toBe(seq);
+    // a merged meanwhile, so c is brought up to date first and waits for CI again.
+    expect(run().merged).toEqual([]);
+    expect(item("feat/c").state).toBe("updating");
+    checks(3, "pass");
+    expect(run().merged).toEqual(["feat/c"]);
+  });
+
+  test("approval paths and notes wait for the person; approve lets it through", () => {
+    const wt = json(hwt(["new", "feat/db", "--no-space"], t1)).path;
+    sh(["mkdir", "-p", "db"], wt);
+    writeFileSync(join(wt, "db", "s.sql"), "x\n");
+    sh(["git", "add", "."], wt);
+    sh(["git", "commit", "-qm", "db"], wt);
+    sh(["git", "push", "-q", "-u", "origin", "feat/db"], wt);
+    pr(1, "feat/db");
+    hwt(["mq", "add", "--pr", "1"], { cwd: wt });
+    work("feat/n", 2);
+    hwt(["note", "--branch", "feat/n", "hold until Friday"], t1);
+    const r = run();
+    expect(r.merged).toEqual([]);
+    expect(item("feat/db")).toMatchObject({ state: "waiting_user" });
+    expect(item("feat/n").why).toBe("note: hold until Friday");
+    expect(hwt(["inbox"], t1).out).toContain("[merge approval]");
+    // Asked once: a second run doesn't ask again.
+    run();
+    expect(hwt(["inbox"], t1).out.trim().split("\n").filter((x) => x.includes("[merge approval]"))).toHaveLength(2);
+    hwt(["mq", "approve", item("feat/db").id], t1);
+    expect(run().merged).toEqual(["feat/db"]);
+  });
+
+  test("a failed deploy check: failed, the worktree stays, the log goes back", () => {
+    config({ mainSession: true, mergeQueue: { verify: "echo boom; exit 3" } });
+    sh(["git", "push", "-q", "origin", "main"]);
+    const wt = work("feat/v", 1);
+    const r = run();
+    expect(r.merged).toEqual(["feat/v"]);
+    expect(item("feat/v")).toMatchObject({ state: "failed", why: "deploy check failed (exit 3)" });
+    expect(existsSync(wt)).toBe(true);
+    // The main's log has one line; the full log is for the working session.
+    const log = hwt(["inbox", "--log"], t1).out;
+    expect(log).toContain("[deploy failed]");
+    expect(log).not.toContain("boom");
+    expect(hwt(["inbox"], t1).out).toBe("");
+  });
+
+  test("after: waits for another branch; one runner at a time; moves are checked", () => {
+    work("feat/a", 1);
+    checks(1, "pending");
+    const wb = json(hwt(["new", "feat/b", "--no-space"], t1)).path;
+    writeFileSync(join(wb, "b"), "b\n");
+    sh(["git", "add", "."], wb);
+    sh(["git", "commit", "-qm", "b"], wb);
+    sh(["git", "push", "-q", "-u", "origin", "feat/b"], wb);
+    pr(2, "feat/b");
+    hwt(["mq", "add", "--pr", "2", "--after", "feat/a"], { cwd: wb });
+    const dry = json(hwt(["mq", "run", "--dry-run"]));
+    expect(dry.waiting.map((w: { branch: string; step: { act: string } }) => [w.branch, w.step.act])).toEqual([["feat/a", "wait"], ["feat/b", "blocked"]]);
+    expect(dry.events).toEqual([]);
+    checks(1, "pass");
+    expect(run().merged).toEqual(["feat/a"]);
+    expect(item("feat/b")).toMatchObject({ state: "updating" });
+    // Another merge lands while b waits: b is updated again, and that shows in its history.
+    const wc = work("feat/c", 3);
+    void wc;
+    expect(run().merged).toEqual(["feat/c"]);
+    expect(item("feat/b")).toMatchObject({ state: "updating", updates: 2 });
+    expect(item("feat/b").history.filter((h: { to: string }) => h.to === "updating")).toHaveLength(2);
+    checks(2, "pass");
+    expect(run().merged).toEqual(["feat/b"]);
+    // A live runner holds the lease: a second one refuses.
+    setFake(() => {});
+    const l = ledger();
+    l.mq.lease = { holder: "other", pid: process.pid, host: require("node:os").hostname(), since: "now", beat: Date.now() };
+    writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
+    const busy = hwt(["mq", "run"], t1);
+    expect(busy.code).toBe(1);
+    expect(busy.err).toContain("already running (other");
+    // done is final; --force is a person's override.
+    const id = item("feat/a").id;
+    expect(hwt(["mq", "set", id, "queued"]).err).toContain("done → queued is not allowed");
+    expect(hwt(["mq", "set", id, "queued", "--force"]).code).toBe(0);
+  });
+
+  test("with CI workflows, a PR whose checks haven't shown up yet waits", () => {
+    sh(["mkdir", "-p", ".github/workflows"]);
+    writeFileSync(join(repo, ".github", "workflows", "ci.yml"), "on: push\n");
+    sh(["git", "add", "-A"]);
+    sh(["git", "commit", "-qm", "ci"]);
+    sh(["git", "push", "-q", "origin", "main"]);
+    work("feat/n", 1);
+    checks(1, "none");
+    const r = run();
+    expect(r.merged).toEqual([]);
+    expect(r.waiting[0]).toMatchObject({ branch: "feat/n", step: { act: "wait", why: "no CI checks reported yet" } });
+    // Once CI shows up and passes, it merges.
+    checks(1, "pass");
+    expect(run().merged).toEqual(["feat/n"]);
+  });
+
+  test("a working session can't run the queue", () => {
+    const wt = work("feat/w", 1);
+    expect(hwt(["mq", "run"], { cwd: wt }).err).toContain("main session's");
+  });
+});
+
+describe("plain folder (no git)", () => {
+  let plain: string;
+  const m1 = { HC_TERMINAL_ID: "m1" };
+  const at = (e: Record<string, string> = {}, cwd = plain) => ({ cwd, env: { ...e } });
+  const stateRoot = () => join(dir, "state", "hwt", "projects");
+  const ledgerOf = () => {
+    const [d] = require("node:fs").readdirSync(stateRoot()) as string[];
+    return JSON.parse(readFileSync(join(stateRoot(), d!, "ledger.json"), "utf8"));
+  };
+
+  beforeEach(() => {
+    plain = join(dir, "plain");
+    sh(["mkdir", "-p", join(plain, "sub")], dir);
+    env.XDG_STATE_HOME = join(dir, "state");
+    const s = fake();
+    s.terminals.push({ address: "m1", name: null, agent: "claude-code", status: "done", state: "live", cwd: plain, labels: {}, parent: null, created_ms: 1 });
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(s));
+  });
+
+  test("a child opens in the folder with its name and project; tell, send, status, rm", () => {
+    const o = json(hwt(["new", "docs", "--task", "write the docs", "--title", "Docs"], at(m1)));
+    expect(o).toMatchObject({ path: plain, branch: "docs", kind: "folder", owner: "m1", terminal: "t100", name: "docs" });
+    const call = fake().calls.find((c) => c.cmd === "space.new")!;
+    const argv = call.arg.argv as string[];
+    expect(call.arg).toMatchObject({ folder: plain, name: "Docs", tab: "docs" });
+    expect(argv.slice(0, 4)).toEqual(["env", `HWT_PROJECT=${plain}`, "HWT_CHILD=docs", "claude"]);
+    expect(argv.at(-1)).toContain('child session "docs"');
+    // The ledger lives outside the folder; the maker became a main.
+    expect(existsSync(join(plain, ".git"))).toBe(false);
+    expect(ledgerOf().worktrees.docs).toMatchObject({ kind: "folder", owner: "m1", space: "sp100", terminal: "t100" });
+    expect(Object.keys(ledgerOf().mains)).toEqual(["m1"]);
+    // The child, in the same folder, reaches its main; it can't make children of its own.
+    const child = at({ HC_TERMINAL_ID: "t100", HWT_CHILD: "docs", HWT_PROJECT: plain });
+    expect(json(hwt(["tell", "[done] README"], child))).toMatchObject({ main: "m1", owner: "m1", delivered: true });
+    expect(fake().sent.at(-1)!.text).toStartWith("[done] README — docs: Docs");
+    expect(hwt(["inbox"], at(m1)).out).toContain("[done] README");
+    expect(hwt(["new", "more", "--agent", "none"], child).err).toContain("main session");
+    expect(hwt(["inbox"], child).code).toBe(1);
+    // Found by its terminal even without HWT_CHILD/HWT_PROJECT (say a shell that dropped them), in its folder.
+    expect(json(hwt(["tell", "x"], at({ HC_TERMINAL_ID: "t100" })))).toMatchObject({ owner: "m1" });
+    expect(json(hwt(["send", "docs", "next part"], at(m1)))).toMatchObject({ worktree: "docs", terminal: "t100" });
+    const st = json(hwt(["status"], at(m1)));
+    expect(st.worktrees).toHaveLength(1);
+    expect(st.worktrees[0]).toMatchObject({ branch: "docs", kind: "folder", mine: true, terminals: [{ address: "t100" }] });
+    // rm closes its space and terminal only; the folder (and the main's terminal there) stay.
+    expect(hwt(["rm", "docs"], at(m1)).err).toContain("agent is live");
+    expect(json(hwt(["rm", "docs", "--kill-agents"], at(m1)))).toMatchObject({ spaces_closed: 1, terminals_killed: 1 });
+    expect(hwt(["rm", "docs", "--kill-agents"], at(m1)).err).toContain("already removed");
+    expect(existsSync(plain)).toBe(true);
+    expect(fake().terminals.find((t) => t.address === "m1")!.state).toBe("live");
+    expect(ledgerOf().worktrees.docs.state).toBe("removed");
+  });
+
+  test("--dir, a promoted folder child, and what needs git", () => {
+    const o = json(hwt(["new", "api", "--dir", "sub", "--agent", "none"], at(m1)));
+    expect(o.path).toBe(join(plain, "sub"));
+    const argv = fake().calls[0]!.arg.argv as string[];
+    expect(argv.slice(3)).toEqual(["sh", "-c", 'exec "${SHELL:-/bin/sh}" -l']);
+    expect(hwt(["new", "api"], at(m1)).err).toContain("child api exists");
+    expect(hwt(["new", "x", "--no-space"], at(m1)).err).toContain("plain folder");
+    expect(hwt(["mq", "ls"], at(m1)).err).toContain("needs a git repository");
+    // The child becomes a main of its own and makes its own children.
+    const child = at({ HC_TERMINAL_ID: "t100", HWT_CHILD: "api", HWT_PROJECT: plain }, join(plain, "sub"));
+    expect(json(hwt(["claim"], child))).toMatchObject({ id: "t100", promoted_from: "m1" });
+    expect(ledgerOf().worktrees.api).toMatchObject({ self_main: true, owner: "t100" });
+    expect(json(hwt(["new", "api-tests", "--agent", "none"], child))).toMatchObject({ owner: "t100", path: plain });
+    expect(hwt(["inbox", "--log"], at(m1)).out).toContain("[now a main] sub (api)");
+  });
+
+  test("hook: silent in an unconfigured folder (no ledger left behind); a child gets its briefing", () => {
+    expect(hwt(["hook", "session-start"], { stdin: JSON.stringify({ cwd: plain, session_id: "s1" }) }).out).toBe("");
+    expect(existsSync(stateRoot())).toBe(false);
+    hwt(["new", "docs", "--agent", "none"], at(m1));
+    const w = hwt(["hook", "session-start"], { stdin: JSON.stringify({ cwd: plain, session_id: "c1" }), env: { HWT_CHILD: "docs", HWT_PROJECT: plain } });
+    expect(w.out).toContain("working session of plain (worktree docs");
+    expect(w.out).toContain('child session "docs"');
+    // With a .hwt.json, sessions in the folder are mains.
+    writeFileSync(join(plain, ".hwt.json"), JSON.stringify({ mainSession: true }));
+    const m = hwt(["hook", "session-start"], { stdin: JSON.stringify({ cwd: join(plain, "sub"), session_id: "s2" }) });
+    expect(m.out).toContain("main session of plain");
+  });
+});
+
 describe("tools", () => {
   test("init guesses setup from the lockfile", () => {
     writeFileSync(join(repo, "package.json"), "{}");
@@ -346,6 +747,17 @@ describe("tools", () => {
     expect(m.out).toContain('"branch":"feat/h"');
     const w = hwt(["hook", "session-start"], { stdin: JSON.stringify({ cwd: wt }) });
     expect(w.out).toContain("working session of repo (worktree feat-h, branch feat/h)");
+    // With a session id, each session in the main checkout is claimed as a main of its own.
+    for (const id of ["s1", "s2"]) hwt(["hook", "session-start"], { stdin: JSON.stringify({ cwd: repo, session_id: id }) });
+    expect(Object.keys(ledger().mains)).toEqual(["s1", "s2"]);
+    const s2 = hwt(["hook", "session-start"], { stdin: JSON.stringify({ cwd: repo, session_id: "s2" }) });
+    expect(s2.out).toContain('"me":"s2","other_mains":1');
+    // feat/h has no owner, so every main sees it.
+    expect(s2.out).toContain('"branch":"feat/h"');
+    // A worktree session that claimed itself a main starts as a main again.
+    hwt(["claim"], { cwd: wt, env: { CLAUDE_CODE_SESSION_ID: "w1" } });
+    const p = hwt(["hook", "session-start"], { stdin: JSON.stringify({ cwd: wt, session_id: "w1" }) });
+    expect(p.out).toContain("main session of repo (worktree feat-h)");
   });
 
   test("shell-init prints a wrapper", () => {

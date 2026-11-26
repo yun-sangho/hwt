@@ -1,119 +1,132 @@
 ---
 name: hwt
-description: git 워크트리를 만들거나 지울 때, 그리고 메인 세션 작업 방식(태스크 목록·작업 세션 위임·편지함·머지 큐)으로 일할 때 사용한다. 브랜치를 분리해 병렬로 작업하거나, 다른 에이전트에게 격리된 체크아웃에서 작업을 맡기거나, 사용자가 워크트리를 요청하거나, 새 작업(태스크)을 받거나 "등록된 작업"을 물으면 `git worktree add`·EnterWorktree·레포 안 작업 목록 문서 대신 hwt 를 쓴다.
+description: git 워크트리를 만들거나 지울 때, 그리고 메인 세션 작업 방식(태스크 목록·작업 세션 위임·편지함·머지 큐)으로 일할 때 사용한다. 브랜치를 분리해 병렬로 작업하거나, 다른 에이전트에게 격리된 체크아웃(git 이 아니면 같은 폴더)에서 작업을 맡기거나, 사용자가 워크트리를 요청하거나, 새 작업(태스크)을 받거나 "등록된 작업"을 물으면 `git worktree add`·EnterWorktree·레포 안 작업 목록 문서 대신 hwt 를 쓴다.
 ---
 
 # hwt: Herdr 스페이스로 여는 git 워크트리
 
-`hwt` 는 PATH 에 있다(`brew install yun-sangho/tap/hwt`). stdout 은 JSON, 진행 메시지는 stderr. 점검은 `hwt doctor`.
+`hwt` 는 PATH 에 있다(`brew install yun-sangho/tap/hwt`). stdout 은 JSON, 진행 메시지는 stderr. 점검은 `hwt doctor`. 레포(어느 체크아웃이든)나 프로젝트 폴더 안에서 실행한다.
 
 ## 규칙
 
-- 워크트리가 필요하면 항상 hwt를 쓴다. `git worktree add`, EnterWorktree, `.claude/worktrees/` 경로를 직접 쓰지 않는다.
-- 레포 안(어느 체크아웃이든)에서 실행한다. 다른 레포면 `cd <repo> && hwt ...`.
-- 체크아웃 위치: `<워크트리 루트>/<repo>/<branch에서 / 등을 -로 바꾼 이름>`(Herdr 의 New worktree 와 같은 규칙, 기본 `~/.herdr/worktrees`). 브랜치가 있으면 그 브랜치를 체크아웃하고, 없으면 현재 HEAD에서 새로 만든다.
-- 출력: stdout에 JSON, 진행 메시지는 stderr. Herdr가 꺼져 있으면 거부한다(워크트리만 원하면 `--no-space`).
-- 에이전트는 `herdr-app do space.new`로 띄운다. Herdr가 사용자의 로그인 셸로 감싸 실행하므로 PATH(nvm 등)가 잡힌다. hwt는 셸을 따로 감싸지 않는다.
+- **git 레포**: 자식 세션마다 자기 워크트리를 받는다. **일반 폴더**(git 아님): `hwt new <이름> --task …` 는 체크아웃 없이 같은 폴더(또는 `--dir <하위 폴더>`)에 Herdr 스페이스를 열어 자식을 띄운다. 폴더 자식들은 파일을 공유하므로 서로 다른 파일이나 하위 폴더를 맡긴다. PR·머지 큐가 없고, 끝나면 `hwt tell` 로 `[완료]` 를 보고한다. 장부는 `~/.local/state/hwt/projects/` 에 있다. 일반 폴더는 `.hwt.json` 이 있을 때만 세션 시작 브리핑을 받는다(`hwt init` 도 거기서 된다)
+- git 레포에서 워크트리는 hwt 로만 만들고 지운다. `git worktree add`, EnterWorktree, `.claude/worktrees/` 는 쓰지 않는다.
+- 체크아웃 위치: `<워크트리 루트>/<repo>/<브랜치 slug>`(Herdr 의 New worktree 와 같은 규칙, 기본 `~/.herdr/worktrees`). 그래서 Herdr 사이드바에서 레포 아래에 보인다.
+- Herdr 가 꺼져 있으면 `hwt new` 는 거부한다. `--no-space` 는 체크아웃만 만든다.
 
-## 메인 세션 작업 방식 (`"mainSession": true` 레포)
+## 메인 세션 작업 방식 (메인 체크아웃 `.hwt.json` 에 `"mainSession": true`)
 
-메인 체크아웃 `.hwt.json`에 `"mainSession": true`가 있는 레포는 아래 방식으로 일한다. 병렬 작업을 시작하는 새 레포도 `.hwt.json`에 `{"mainSession": true}`를 넣어 같은 방식을 쓴다(레포 전용 절차는 그 레포 AGENTS.md 에).
-
-- **메인 세션** = 메인 체크아웃에 뜬 에이전트. 사용자와 대화, 태스크 판단, 워크트리 만들기·지우기, 머지·배포 확인·정리만 한다. 메인 체크아웃 파일을 직접 고치지 않고 구현·조사·테스트는 작업 세션에 맡긴다
-- **작업 세션** = 워크트리 하나에서 일하는 독립 에이전트(메인의 자식 아님). 자기 워크트리만 고치고, 워크트리를 만들거나 지우지 않고, 머지하지 않는다
-- **상태는 대화가 아니라 장부에**: `<메인 체크아웃>/.git/hwt/`(`ledger.json` 메인·워크트리·세션 ID·태스크·머지 큐·메모, `inbox.jsonl` + `acked` 편지함). 모든 체크아웃이 같이 보고, 커밋되지 않는다
-- **작업 목록 = `hwt task`**. 레포 안에 작업 목록 문서(tasks.md 등)를 따로 두지 않는다. "등록된 작업/남은 작업"을 물으면 `hwt task ls --all`·`hwt status` 를 본다
+- **메인 세션은 여러 개이고, 각자 자기 작업 세션을 둔다.** 내가 유일한 메인이라고 가정하지 않는다.
+- **메인 세션** = 사용자와 대화하고, 태스크를 판단하고, 워크트리를 만들고 지우고, 머지·배포 확인·정리를 하는 에이전트. 기본적으로 메인 체크아웃의 에이전트 세션은 모두 메인이다(SessionStart 훅이 claim 한다). 자기가 일하는 곳의 파일을 직접 고치지 않고 구현·조사·테스트는 작업 세션에 맡긴다.
+- **작업 세션** = 워크트리 하나에서 일하는 독립 에이전트. 만든 메인이 주인이다(장부의 `owner`). 그 메인에게만 보고하고, 자기 워크트리만 고치고, 워크트리를 만들거나 지우지 않고, 머지하지 않는다.
+- **작업 세션도 독립 메인이 될 수 있다**: 사용자가 원하면(작업을 더 쪼개야 할 때 등) 자기 워크트리에서 `hwt claim` 한다. 그 워크트리와 PR 을 스스로 맡고, 자기 브랜치에서 갈라진 작업 세션을 `hwt new` 로 만들 수 있다. 원래 메인은 `[메인 독립]` 기록을 받고 더는 관리하지 않는다.
+- **메인의 신원**은 에이전트 세션 ID(resume 해도 유지), 없으면 hc 터미널이다. 메인의 터미널에서 새 세션이 시작되면 그 메인의 워크트리·태스크·메모를 넘겨받는다. 아주 사라진 메인의 워크트리는 다른 메인이 `hwt adopt <worktree>` 로 넘겨받는다.
+- **내 것**: 내가 만들었거나 넘겨받은 워크트리와 그 태스크·메모·편지함·머지 요청. 주인 없는 기록은 모든 메인의 것이다. 다른 메인의 워크트리에 send·머지·삭제하지 않는다. 사용자에게 묻거나, 허락받고 `adopt` 한다.
+- **상태는 대화가 아니라 장부에**: `<메인 체크아웃>/.git/hwt/`(`ledger.json`, `inbox.jsonl`, `acked`). 모든 체크아웃과 모든 메인이 같이 보고, 커밋되지 않는다.
+- **메인은 결정이 필요할 때만 깨운다.** 메인 터미널에 들어가는 것(메인 대화의 한 턴): `[머지 승인 요청]`, `[작업 제안]`, `[선행 완료]`, 작업 세션의 `hwt tell`(`[결정 공유]`, `[워크트리 요청]`). 나머지는 장부의 기록으로만 남고 필요할 때 본다(`hwt inbox --log`, `status.log_recent`): 머지 요청, 반려, 리베이스 요청, 배포 확인 실패, `[메인 독립]`. PR·리뷰·CI 수정·리베이스·다시 줄 서기는 모두 작업 세션 안에서 끝난다.
+- **작업 목록 = `hwt task`**. 레포 안에 작업 목록 문서를 따로 두지 않는다. "남은 작업?" → `hwt task ls --all`, `hwt status`(내 것. 모든 메인 것은 `task ls --every-main`).
 
 ### 메인 세션
 
 ```sh
-hwt claim                     # 세션 시작 시(SessionStart 훅이 자동으로 한다): 이 터미널을 메인으로 등록
-hwt status [--prs]            # 복원용 한 장: notes·tasks·merges·미처리 편지·워크트리별 세션/터미널/PR
-hwt note [--branch B] "…"     # 사용자 결정·허락을 받는 즉시 남긴다(예: "PR 나오면 머지까지", 범위 결정). 자동화 안 됨, 습관으로
-hwt note --drop <n>           # 잘못 남긴 메모 지우기(n: hwt status 에서 1 = 가장 오래된 것)
-hwt inbox [--all] / ack <id>  # 작업 세션 편지. 처리한 id 를 ack (ack --all 은 목록을 다 본 뒤에만)
-hwt wait [--timeout S]        # 기다릴 때. hc wait --children 은 쓰지 않는다(옛 메시지로 일찍 끝남)
-hwt send <워크트리|브랜치> "…" # 작업 세션에게. 터미널 ID 가 바뀌어도 된다
+hwt claim                     # 세션 시작 시(메인 체크아웃에서는 SessionStart 훅이 한다). 다른 메인은 그대로 메인
+hwt status [--prs]            # 한 장 복구: 메인 목록, 내 메모·태스크·안 읽은 메시지, 모든 머지와 워크트리(mine: true = 내 것), PR
+hwt adopt <worktree>...       # 사라진 메인의 워크트리 넘겨받기(안 읽은 메시지도 같이 온다)
+hwt mains [ls]                # 모든 메인: live, owns
+hwt mains prune [--release] [--dry-run]   # 사라진 메인 정리. 워크트리를 가진 메인은 --release 없이는 남긴다(주면 그 일은 주인 없음이 된다)
+hwt note [--branch B] "…"     # 사용자의 결정·허락은 받는 즉시 기록
+hwt note --drop <n>           # 잘못된 메모 지우기(n: hwt status 에서 가장 오래된 것이 1)
+hwt inbox [--all] / ack <id>  # 내 결정이 필요한 메시지. 처리한 것은 ack
+hwt inbox --log               # 기록: 결정 없이 일어난 일(머지 요청, 반려, 배포 확인 실패)
+hwt wait [--timeout S]        # 기다릴 때(hc wait --children 은 지난 메시지로 일찍 끝나서 쓰지 않는다)
+hwt send <worktree> "…"       # 내 작업 세션에게. 지금 터미널 ID 가 뭐든 찾아서 보낸다
 ```
 
-**태스크** — 사용자가 준 일·작업 세션의 `[작업 제안]` 모두 장부에 쌓고 메인이 판단한다.
+**태스크** — 사용자가 요청한 것과 모든 `[작업 제안]` 은 장부에 넣고 메인이 판단한다.
 ```sh
 hwt task add "<번호> <제목>" --touches path1,path2 [--detail "…"]
-hwt task ls [--all]           # 대기·결정·진행 중 + overlaps(같은 경로를 고친 진행 중 브랜치)
-hwt task decide <id> now|later|after:<브랜치> --why "…"
-hwt new <브랜치> --title "<번호> 짧은 제목" --task "<지시>" --task-id <id>   # running
+hwt task ls [--all] [--every-main]  # 내 것. overlaps: 어느 메인 것이든 같은 경로를 건드리는 실행 중 브랜치
+hwt task decide <id> now|later|after:<branch> --why "…"
+hwt new <branch> --title "<번호> 짧은 제목" --task "<지시>" --task-id <id>   # → running
 hwt task done|drop <id> [--why "…"]
 ```
-- `now`(바로 병렬): 겹침 없음, 서로 결과에 기대지 않음
-- `after:<브랜치>`: 같은 파일·화면 흐름, 그 PR 에 기댐, 둘 다 DB 스키마·마이그레이션을 바꿈, 공용 규칙 문서를 같이 고침. 그 브랜치가 머지되면 다시 본다
-- `later`: 사용자가 순서를 정했거나 범위가 불분명 → 사용자에게 묻고 `note`
-- 진행 중 세션의 같은 PR 범위인 작은 후속은 새 태스크로 쪼개지 않고 그 세션에 `send`
-- 판단에 코드 조사가 필요하면 메인이 읽지 말고 조사용 작업 세션(읽기 전용 지시)을 띄워 영향 범위·`--touches` 를 보고받는다
+- `now`: 겹치는 것이 없고 다른 결과에 기대지 않는다
+- `after:<branch>`: 같은 파일이나 화면 흐름, 그 PR 에 의존, 둘 다 DB 스키마 변경, 둘 다 공용 규칙 문서 수정. 다른 메인의 브랜치여도 된다
+- `later`: 사용자가 순서를 정했거나 범위가 불분명 → 묻고 `note`
+- 실행 중인 세션의 PR 범위 안 작은 후속 작업: 새 태스크 대신 그 세션에 `send`
+- 판단에 코드 읽기가 필요하면 메인에서 읽지 말고 읽기 전용 조사 세션을 띄운다
 
-**지시(`--task`)에 넣을 것**: 범위, 완료 조건, 검증 명령, "PR 올리고 CI 통과하면 `hwt mq add --pr <n>` 후 머지될 때까지 대기". 보고 방법(`hwt tell`) 안내는 hwt 가 지시 끝에 자동으로 붙인다.
+**지시(`--task`)**: 범위, 완료 기준, 확인 명령, 그리고 "push 하고 PR 을 연 뒤 `hwt mq add --pr <n>` 하고 머지될 때까지 남아 있기". 보고 방법(`hwt tell`, 결정이 필요할 때만)은 hwt 가 덧붙인다.
 
-**부르는 이름**: 작업 세션은 늘 "워크트리 이름(작업 제목)" 짝으로 부른다(예: `feat-t14-slot-edit(T14 딜 수정)`). 사용자에게 터미널 ID·세션 ID 로 말하지 않는다. Herdr 로 띄운 터미널은 hc 이름이 없고 레이블 `hwt.worktree=<워크트리 이름>` 을 단다. 작업 세션에게 보낼 때는 `hwt send <워크트리>` 를 쓴다(`hc send <이름>` 은 안 된다). 제목은 Herdr 사이드바가 한글 8자 안팎에서 자르니 짧게, 번호를 앞에.
+**부르는 이름**: 작업 세션은 "worktree (제목)" 으로 부른다. 예: `feat-t14-slot-edit (T14 슬롯 수정)`. 터미널·세션 ID 로 부르지 않는다. 그 터미널에는 `hwt.worktree=<worktree>` 라벨이 있다.
 
-**머지 큐** — 머지·배포 확인·정리는 메인만, 하나씩.
+**머지 큐** — 장부 안의 실제 큐이고 `hwt mq run` 이 처리한다. 레포마다 러너는 하나(lease)이고, 모든 메인을 통틀어 한 번에 하나씩 머지한다. 러너는 모든 메인의 항목을 처리하고, 손이 필요한 것만 각 항목의 메인에게 알린다.
 ```sh
-hwt mq ls [--all] / mq next   # 항목별 checks: dirty·ahead·behind·conflict·PR/CI·줄 수·approval(auto|user)
-hwt mq set <id> merging|verifying|done|returned|failed|waiting_user [--why "…"]
-hwt mq approve <id>           # 사용자가 승인함
+hwt mq run [--watch] [--interval S] [--timeout S]   # 큐 처리. --watch 는 줄이 빌 때까지 CI 를 계속 확인한다(백그라운드로)
+hwt mq run --dry-run          # 항목마다 무엇을 할지만 보여 준다. 아무것도 바꾸지 않는다
+hwt mq ls [--all] / mq next   # 줄 순서, 주인, blocked_by, 체크. next = 내 다음 항목과 그 계획
+hwt mq approve <id>           # 사용자가 승인(waiting_user → queued)
+hwt mq prio <id> <n> / mq drop <id> / mq log <id>   # 순서 바꾸기(클수록 먼저), 빼기, 상태 이력
+hwt mq set <id> <state> [--force]   # 수동 이동. 허용된 이동만, --force 는 사용자가 덮어쓸 때만
 ```
-1. `mq next` → 검사 실패(충돌·뒤처짐·CI·dirty)면 `returned` + `hwt send <워크트리> "[리베이스 요청] …"`
-2. `note` 에 사용자가 그 PR 에 대해 말한 것이 있으면 따른다. 없으면 `approval: auto` → 메인이 머지, `user`(`.hwt.json` 의 `mergeApproval` 경로·줄 수) → `waiting_user` 로 두고 이유와 함께 사용자에게 묻는다. 메인이 PR 을 읽고 위험하면 `user` 로 올릴 수 있지만 `user` 를 `auto` 로 내리지는 않는다
-3. `merging`: `gh pr merge <n>` → `verifying`: 레포의 배포 확인(있으면. 오래 걸리면 `hc run --bg`)
-4. 통과 → `done` → `hwt rm <브랜치> -D --kill-agents` + `git push origin --delete <브랜치>` → 레포의 gc(그 레포 AGENTS.md 에 적힌 명령)로 지운 워크트리가 남긴 DB·포트·프로세스 정리 → `after:<브랜치>` 태스크 다시 보기. 실패 → `failed`, 작업 세션에 로그를 넘겨 같은 워크트리에서 고침 PR(다시 `mq add`)
-- 작업 세션의 결과를 믿기 전에 PR·CI·커밋을 직접 한 번 확인한다
+- 순서: 우선순위, 그다음 들어온 순서. 반려 뒤 다시 넣은 브랜치는 자리를 유지한다. `mq add --after b1,b2` 는 그 브랜치들이 머지될 때까지 기다린다
+- 러너는 항목마다 한 단계를 정한다: **merge**(CI 통과, 승인 auto 또는 승인됨) → `gh pr merge --squash`(`mergeQueue.method`) → 배포 확인(`mergeQueue.verify`) → 정리: `hwt rm -D --kill-agents`, 원격 브랜치 삭제, 레포 gc(`mergeQueue.gc`), 메인 체크아웃 fast-forward, 태스크 `done`. **update**(베이스보다 뒤처짐, 충돌 없음) → `gh pr update-branch` 후 CI 를 다시 기다린다(`maxUpdates` 까지, 넘으면 반려). **wait**(CI 실행 중) / **blocked**(`after`). **ask**(mergeApproval 경로·줄 수, 그 브랜치에 대한 `note`, 브랜치 보호) → `waiting_user` + 주인 메인에게 `[머지 승인 요청]`. **return**(충돌, CI 실패, 커밋 안 된 변경, push 안 된 커밋, PR 없음) → `returned` + 작업 세션에 `[리베이스 요청]`/`[머지 반려]`(메인에는 기록 한 줄)
+- 배포 확인 실패 → `failed`, 워크트리는 남기고 로그를 작업 세션에 보낸다. 같은 워크트리에서 고치고 다시 `mq add`
+- 세션이 독립 메인인 워크트리는 정리 때 지우지 않는다
+- 반려·리베이스 요청·`[베이스 반영]`·배포 로그는 작업 세션이 전부 받아서 스스로 고친다. 메인에는 기록 한 줄만 남는다
+- 러너는 메인이 돌리고, 깨우는 것에 대응한다: 승인 요청은 사용자에게 묻고, `[선행 완료]` 태스크는 시작한다. 작업 세션의 보고를 믿기 전에 PR·CI·커밋을 직접 확인한다
 
-**재시작한 메인**: `hwt claim` → `hwt status --prs` → notes 를 전제로, `merging`/`verifying` 에서 멈춘 항목 확인, 미처리 편지 처리·ack, 장부엔 `active` 인데 터미널이 없는 세션은 `hwt new <브랜치> --resume-from <session>`(원본 터미널이 살아 있으면 `--fork`). 세션 jsonl 을 복사하지 않는다.
+**메인 재시작**: resume(같은 세션 ID)했거나 같은 터미널이면 내 기록은 그대로 내 것이다. `hwt claim` → `hwt status --prs` → 메모는 그대로 따르고, `merging`/`verifying` 에 멈춘 내 항목을 확인하고, 안 읽은 메시지를 처리하고 ack 한다. 장부에 `active` 인데 터미널이 없는 내 세션 → `hwt new <branch> --resume-from <session>`(원래 터미널이 살아 있으면 `--fork`). 다른 곳에서 새로 시작한 세션 → `status.mains` 에서 사라진 메인(`live: false`)을 찾고, 사용자가 이어 가길 원하는 워크트리를 `hwt adopt` 한다.
 
 ### 작업 세션
 
 ```sh
-hwt tell "[…] …"              # 메인에게. 편지함에 먼저 적고 살아 있는 메인에게 전달(꺼져 있어도 남는다). hc send 금지
-hwt task add "<제목>" --touches … # 일하다 찾은 별도 후속 작업은 직접 하지 말고 제안([작업 제안] 이 같이 간다)
-hwt mq add --pr <n> "요약"     # PR + CI 통과 뒤 머지 요청. 머지될 때까지 살아서 returned·failed 에 대응
+hwt tell "[…] …"              # 내 메인(워크트리 주인)에게: 편지함에 먼저 넣고 살아 있는 터미널로. hc send 는 쓰지 않는다
+hwt claim                     # 사용자가 이 세션을 독립 메인으로 만들자고 할 때만
+hwt task add "<제목>" --touches …   # 따로 할 후속 작업은 직접 하지 말고 제안한다
+hwt mq add --pr <n> "요약"    # push 하고 PR 을 연 뒤. 머지될 때까지 남아서 반려·실패·[베이스 반영](git pull)에 대응
 ```
-- 메인에 보내는 것: `[워크트리 요청]`·`[작업 제안]`·`[머지 요청]`·`[결정 공유]`(사용자의 답이 다른 작업에도 걸리는 결정)·다른 작업에 영향을 주는 일. 결론만 짧게, 긴 내용은 파일·PR 본문에 쓰고 경로만
-- 이 작업 안에서만 필요한 질문(구현 방식·문구·테스트 범위)은 메인을 거치지 않고 자기 화면에서 사용자에게 직접 묻는다
-- `hwt new`·`hwt rm` 은 작업 워크트리에서 거부된다(정상). 사람은 `HWT_ANYWHERE=1`
+- 진행 상황·상태·완료를 보고하지 않는다: `tell` 하나하나가 메인 대화의 한 턴이다. 메인이 판단할 것만 보낸다: `[워크트리 요청]`, `[작업 제안]`, `[결정 공유]`(다른 작업이 기대는 사용자의 답), 다른 작업에 영향을 주는 일. 짧게, 긴 내용은 파일이나 PR 본문에
+- PR·리뷰·CI·머지는 작업 세션 몫이다: `mq add` 가 보고의 전부다. `[리베이스 요청]`·`[머지 반려]`·`[배포 확인 실패]` 가 오면 메인에 알리지 말고 여기서 고쳐 다시 `mq add`
+- 이 작업 안에서만 필요한 질문은 내 화면에서 사용자에게 직접 묻는다
+- claim 전에는 작업 워크트리에서 `hwt new` / `hwt rm` 이 거부된다(정상). 사용자가 `HWT_ANYWHERE=1` 로 덮어쓸 수 있다
 
-## 만들기 옵션
+## hwt new
 
 ```sh
-hwt new feat/x --title "T3 로그인 수정" --task "<지시>" [--task-id <id>]   # 워크트리 + 스페이스 + 독립 claude 작업 세션
-hwt new feat/x --agent codex --task "…"     # codex: --no-daemon -s danger-full-access -a on-request -C <워크트리> 자동
-hwt new feat/x --resume-from <세션ID> [--fork]   # 그 세션을 이 워크트리에서 이어(복제해) 띄움
-hwt new feat/x --agent none                 # 사람이 볼 셸만
-hwt new feat/x --no-space                   # 워크트리만
+hwt new feat/x --title "T3 로그인 수정" --task "<지시>" [--task-id <id>]
+hwt new feat/x --agent codex --task "…"
+hwt new feat/x --resume-from <session id> [--fork]
+hwt new feat/x --agent none        # 셸만
+hwt new feat/x --no-space          # 체크아웃만
+hwt new docs --task "…" [--dir sub] # 일반 폴더: 체크아웃 없이 이 폴더(또는 sub)에 자식
 ```
-- `--agent claude|codex|none|<명령>`: 기본 `claude`. claude 는 `--session-id` 를 미리 정해 장부에 적는다. task 는 에이전트의 마지막 인자(첫 프롬프트)로 들어간다
-- 작업 세션은 늘 독립 에이전트다(부모 없음, keep 켜짐). 예전의 `--name`·`--attach`·`--detach` 는 받기만 하고 무시한다. 내 자식으로 묶은 에이전트가 필요하면 hwt 대신 `hc run` 을 쓴다
-- `hwt title <워크트리|브랜치> "…"`: 제목 바꾸기(장부 + Herdr 스페이스·탭)
-- 결과 `created: false` 는 기존 워크트리 재사용, `reused_space: true` 는 열린 스페이스로 이동만(새 에이전트 없음 → `hwt send`)
+- 새 워크트리는 내 것(`owner`)이다. 그 `hwt tell` 은 나에게만 온다
+- 태스크가 에이전트의 첫 프롬프트가 된다. Claude 는 미리 정한 `--session-id` 를 받고 장부에 기록된다
+- 작업 세션은 항상 독립 에이전트다(부모 없음). 내 자식 에이전트가 필요하면 `hc run` 을 쓴다
+- `created: false` = 기존 체크아웃 재사용. `reused_space: true` = 스페이스가 이미 열려 있었다(새 에이전트 없음 → `hwt send`)
+- 워크트리 하나에 에이전트 하나
 
-여러 에이전트를 병렬로 돌릴 땐 브랜치마다 워크트리를 하나씩. 한 워크트리에 에이전트 둘을 넣지 않는다.
+## .hwt.json
 
-## 레포 설정 (`.hwt.json`)
-
-체크아웃 자신의 파일 우선, 없으면 메인 체크아웃의 것(`mainSession`·`mergeApproval` 은 메인 체크아웃 것만).
 ```json
 { "setup": "pnpm install", "mainSession": true,
-  "mergeApproval": { "paths": ["db/**", ".github/workflows/**", "AGENTS.md"], "maxLines": 400 } }
+  "mergeApproval": { "paths": ["db/**", ".github/workflows/**", "AGENTS.md"], "maxLines": 400 },
+  "mergeQueue": { "method": "squash", "verify": "scripts/check-deploy", "gc": "make gc", "cleanup": true, "maxUpdates": 3 } }
 ```
-- `setup`: `new`가 체크아웃을 새로 만들 때만 한 번. 새 스페이스 터미널에서 에이전트보다 먼저 `sh` 로 돈다(`--no-space` 면 호출한 쪽 환경에서 바로). 실패해도 경고만. 건너뛰려면 `--no-hooks`
-- teardown 은 없다. `rm` 은 지우기만 한다. 워크트리가 쓰는 자원(DB·포트·dev 서버)은 워크트리가 없어진 뒤에도 레포의 gc 가 찾아 정리할 수 있게 만든다(자원 이름에 슬롯·경로를 붙이고, `git worktree list` 에 없는 것을 지움). 메인 세션이 머지 큐 정리 단계에서 `rm` 뒤에 돌린다. 어떤 방법으로 지웠든(사이드바·`git worktree remove`) 같은 gc 로 정리된다
-- `mergeApproval`: 경로에 걸리거나 줄 수를 넘으면 머지에 사용자 승인. 스키마·마이그레이션, 돈·예약 같은 핵심 규칙, 인증, 배포·인프라, 법적 문구, 공용 규칙 문서를 넣는다
-- hwt 밖에서 만든 체크아웃(Herdr 사이드바 New worktree·`git worktree add`)에는 setup 이 돌지 않는다. 레포의 스크립트가 필요한 것이 없으면 스스로 준비하게 만든다(예: dev 스크립트가 install 부터)
+- `setup`: `hwt new` 가 만든 체크아웃에서만 한 번, 새 스페이스 터미널에서 에이전트보다 먼저 돈다(`--no-space` 면 바로). 실패해도 경고만 한다. `--no-hooks` 로 건너뛴다. 다른 방법으로 만든 체크아웃에는 setup 이 없으니 레포 스크립트가 스스로 준비해야 한다
+- teardown 은 없다: `rm` 은 지우기만 한다. 체크아웃이 남긴 것은 메인이 `rm` 뒤에 돌리는 레포 gc 가 회수한다
+- `mergeApproval`: 경로가 맞거나 줄 수가 넘으면 사용자가 머지를 승인한다
+- `mergeQueue`: `mq run` 의 머지 방식(`method`), 배포 확인(`verify`, 환경 변수 `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` 초), 정리(`cleanup`, `gc`), 뒤처진 PR 갱신 최대 횟수(`maxUpdates`), CI 체크가 아직 없는 PR 을 기다릴지(`requireChecks`, 기본: 레포에 .github/workflows 가 있으면), PR 에 베이스가 없을 때의 `base` 브랜치
+- 메시지 태그는 `lang` 을 따른다. 이 문서는 `"lang": "ko"` 기준이고, 기본(en)이면 `[task proposal]`, `[merge approval]` 처럼 영어로 나온다
 
-## 지우기
+## hwt rm
 
 ```sh
-hwt rm feat/x [-D] [--kill-agents]   # 스페이스 닫기 + 그 폴더 hc 터미널 종료 + git worktree remove (+ 브랜치 삭제), 장부 removed
-hwt ls                                # 이 레포의 워크트리 목록
+hwt rm feat/x [-D] [--kill-agents]
+hwt rm docs --kill-agents          # 일반 폴더: 그 자식의 스페이스와 터미널만 닫는다. 파일은 남는다
 ```
-- 살아 있는 에이전트 터미널이 있으면 거부한다. `hc read <id>`로 일하는 중이 아닌지 본 뒤에만 `--kill-agents`
-- 커밋 안 한 변경이 있으면 거부한다. `-f`(변경 버림)는 사용자가 명시적으로 허락했을 때만
-- `-D`는 브랜치가 머지됐거나 사용자가 허락했을 때만
-- 내가 만들지 않은 워크트리(사용자가 연 것, 다른 에이전트 것)는 묻지 않고 지우지 않는다
+- 체크아웃 안에 에이전트 터미널이 살아 있으면 거부한다: `hc read <id>` 로 일하고 있지 않은지 확인한 뒤 `--kill-agents`
+- 커밋 안 된 변경이 있으면 거부한다. `-f`(변경 버리기)는 사용자가 명시적으로 허락했을 때만
+- `-D` 는 브랜치가 머지됐거나 사용자가 허락했을 때만
+- 내가 만들지 않은 워크트리(사용자나 다른 에이전트 것)는 묻지 않고 지우지 않는다

@@ -18,8 +18,10 @@ else if (cmd === "do") {
     const tab = `tb${n}`;
     const terminal = `t${n}`;
     const argv: string[] = a.argv ?? [];
-    // The agent is the program after `sh -c <script> sh`, else argv[0].
-    const prog = argv[0] === "sh" && argv[1] === "-c" ? argv[4] : argv[0];
+    // The agent is the program after `env VAR=… ` and `sh -c <script> sh`, else argv[0]; a bare login shell is none.
+    let rest = argv;
+    if (rest[0] === "env") rest = rest.slice(1).filter((x, i, all) => !all.slice(0, i + 1).every((y) => y.includes("=")));
+    const prog = rest[0] === "sh" && rest[1] === "-c" ? rest[4] : rest[0];
     s.spaces.push({ id: space, name: a.name ?? null, folder: a.folder, tabs: [{ id: tab, name: a.tab ?? null }] });
     s.terminals.push({
       address: terminal, name: null, agent: prog ? basename(prog) : null, status: "working", state: "live",

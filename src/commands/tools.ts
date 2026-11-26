@@ -3,11 +3,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "../args.ts";
 import { langFor, mainConfig, userConfigPath, worktreesRoot, type RepoConfig } from "../config.ts";
-import { currentBranch, gitOut, repoMain, samePath, toplevel } from "../git.ts";
+import { currentBranch, gitOut, realpath, samePath, toplevel } from "../git.ts";
+import { childKey, isGit, projectRoot } from "../project.ts";
 import * as herdr from "../herdr.ts";
 import { readLedger, stateDir, unackedInbox } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
-import { claimMain, isMainSessionRepo } from "../session.ts";
+import { claimMain, isMainSessionRepo, mainId, owns } from "../session.ts";
 import { basename, die, has, printJson, run, runOut, warn } from "../util.ts";
 import { claudeDir, claudeHookInstalled, codexBlockInstalled, codexDir, ourSkill } from "./install.ts";
 
@@ -44,9 +45,9 @@ function guessSetup(dir: string): { setup: string; from: string[] } | undefined 
 
 export function cmdInit(args: string[]): void {
   const a = parse(args, { opts: ["setup", "lang"], flags: ["main-session", "force"] }, INIT_USAGE);
-  const top = toplevel() ?? die("not in a git repository");
-  const main = repoMain();
-  if (!samePath(top, main)) die("run hwt init in the main checkout");
+  // A plain folder works too: its .hwt.json makes it the project for everything below it.
+  const main = isGit(process.cwd()) ? projectRoot() : realpath(process.cwd());
+  if (isGit(main) && !samePath(toplevel(), main)) die("run hwt init in the main checkout");
   const f = join(main, ".hwt.json");
   if (existsSync(f) && !a.flag.force) die(`${f} exists (pass --force to rewrite it)`);
   const cfg: RepoConfig = { version: 1 };
@@ -112,16 +113,15 @@ export function cmdDoctor(): void {
   }
   add("user config", true, false, existsSync(userConfigPath()) ? userConfigPath() : `${userConfigPath()} (none, defaults)`);
 
-  const top = toplevel();
-  if (top) {
-    const main = repoMain();
+  {
+    const main = projectRoot();
     const f = join(main, ".hwt.json");
     let detail = "none (defaults; hwt init writes one)";
     let ok = true;
     if (existsSync(f)) {
       try {
         const c = JSON.parse(readFileSync(f, "utf8")) as RepoConfig & { teardown?: string };
-        detail = `${f}: ${c.mainSession ? "main-session workflow" : "worktrees only"}${c.setup ? `, setup: ${c.setup}` : ""}`;
+        detail = `${f}: ${c.mainSession ? "main-session workflow" : "worktrees only"}${c.setup ? `, setup: ${c.setup}` : ""}${isGit(main) ? "" : " (plain folder: children share it)"}`;
         if (c.teardown) {
           ok = false;
           detail += `; "teardown" is ignored (hwt rm doesn't run it): reclaim with the repo's gc after rm`;
@@ -134,7 +134,7 @@ export function cmdDoctor(): void {
     add("repo config", ok, false, detail);
     try {
       const l = readLedger(main);
-      add("ledger", true, false, `${stateDir(main)}: ${Object.keys(l.worktrees).length} worktrees, ${(l.tasks ?? []).length} tasks, ${unackedInbox(main).length} unread`);
+      add("ledger", true, false, `${stateDir(main, false)}: ${Object.keys(l.worktrees).length} worktrees, ${(l.tasks ?? []).length} tasks, ${unackedInbox(main).length} unread`);
     } catch (e) {
       add("ledger", false, false, String(e));
     }
@@ -174,51 +174,69 @@ end
 }
 
 /**
- * hwt hook session-start: for an agent's session-start hook (Claude Code passes {cwd} on stdin). In a repo
- * whose main checkout has "mainSession": true, it tells the starting session its role and what the ledger
- * holds. Prints nothing anywhere else, and never fails the session start.
+ * hwt hook session-start: for an agent's session-start hook (Claude Code passes {cwd, session_id} on stdin). In
+ * a repo whose main checkout has "mainSession": true, it tells the starting session its role and what of the
+ * ledger is its own; a session in the main checkout (or in a worktree it claimed) is claimed as a main.
+ * Prints nothing anywhere else, and never fails the session start.
  */
 export async function cmdHook(args: string[]): Promise<void> {
   if (args[0] !== "session-start") die("usage: hwt hook session-start");
   try {
     let cwd = process.cwd();
+    let session = "";
     if (!process.stdin.isTTY) {
       const input = await Bun.stdin.text();
       try {
-        const c = JSON.parse(input)?.cwd;
-        if (typeof c === "string" && existsSync(c)) cwd = c;
+        const v = JSON.parse(input);
+        if (typeof v?.cwd === "string" && existsSync(v.cwd)) cwd = v.cwd;
+        if (typeof v?.session_id === "string") session = v.session_id;
       } catch {}
     }
     process.chdir(cwd);
-    const top = toplevel();
-    if (!top) return;
-    const main = repoMain();
-    if (!isMainSessionRepo(main)) return;
+    const main = projectRoot();
+    const git = isGit(main);
+    if (git && !toplevel()) return;
+    // A plain folder takes part only when configured, or when this session is a child hwt started there
+    // (so a session in any other folder doesn't leave a ledger behind).
+    if (!isMainSessionRepo(main) && (git || !process.env.HWT_CHILD)) return;
     const m = messages(langFor(main));
     const self = selfCommand();
-    if (samePath(top, main)) {
-      let claimed = false;
-      if (herdr.myTerminal()) {
-        claimMain(main);
-        claimed = true;
-      }
+    const id = session || mainId();
+    const l0 = readLedger(main);
+    const key = childKey(main, l0);
+    // A child whose session became a main (hwt claim there) starts as a main again when resumed.
+    const promoted = !!key && !!l0.worktrees[key]?.self_main && (!id || !!l0.mains[id]);
+    if (!key || promoted) {
+      // Every session that isn't a child is a main; there can be several, each with its own children.
+      const claimed = !!id;
+      if (claimed) claimMain(main, promoted ? key : null, id);
       const l = readLedger(main);
+      const mine = (o: string | null | undefined) => owns(id, o);
+      const others = Object.keys(l.mains).filter((x) => x !== id).length;
       const brief = {
-        notes: l.notes.map((n) => n.text),
+        me: id || null,
+        other_mains: others,
+        notes: l.notes.filter((n) => mine(n.owner)).map((n) => n.text),
         tasks: (l.tasks ?? [])
-          .filter((t) => ["queued", "decided", "running"].includes(t.state))
+          .filter((t) => ["queued", "decided", "running"].includes(t.state) && mine(t.owner))
           .map(({ id, title, state, decision, branch }) => ({ id, title, state, decision, branch })),
         merges: (l.merges ?? [])
-          .filter((x) => !["done", "failed"].includes(x.state))
+          .filter((x) => !["done", "failed", "dropped"].includes(x.state) && mine(l.worktrees[x.branch]?.owner))
           .map(({ id, branch, pr, state }) => ({ id, branch, pr, state })),
-        inbox_unacked: unackedInbox(main).map(({ id, text }) => ({ id, text: text.slice(0, 200) })),
+        inbox_unacked: unackedInbox(main)
+          .filter((x) => (x.to ? x.to === id || !id : mine(l.worktrees[x.branch]?.owner)))
+          .map(({ id, text }) => ({ id, text: text.slice(0, 200) })),
         worktrees: Object.entries(l.worktrees)
-          .filter(([, w]) => w.state === "active")
+          .filter(([b, w]) => w.state === "active" && mine(w.owner) && b !== key)
           .map(([b, w]) => ({ branch: b, title: w.title ?? null, session: w.session })),
       };
-      process.stdout.write(`${m.sessionStartMain(basename(main), claimed)}\n${JSON.stringify(brief)}\n`);
+      const where = promoted ? ` (${git ? "worktree" : "child"} ${git ? basename(l.worktrees[key]!.path) : key})` : "";
+      process.stdout.write(`${m.sessionStartMain(basename(main) + where, claimed)}\n${JSON.stringify(brief)}\n`);
+    } else if (git) {
+      process.stdout.write(m.sessionStartWorker(basename(main), basename(toplevel()!), currentBranch(), self) + "\n");
     } else {
-      process.stdout.write(m.sessionStartWorker(basename(main), basename(top), currentBranch(), self) + "\n");
+      const w = l0.worktrees[key]!;
+      process.stdout.write(`${m.sessionStartWorker(basename(main), key, "-", self)}\n${m.folderChild(key, w.path)}\n`);
     }
   } catch {
     // Never fail a session start.

@@ -20,6 +20,15 @@ export interface FakeState {
   terminals: FakeTerminal[];
   sent: { to: string; text: string }[];
   calls: { cmd: string; arg: Record<string, unknown> }[];
+  prs?: Record<string, FakePr>;
+}
+
+export interface FakePr {
+  head: string;
+  base: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  checks: "pass" | "fail" | "pending" | "none";
+  sha?: string;
 }
 
 const file = () => process.env.HWT_FAKE_STATE ?? "/tmp/hwt-fake-state.json";

@@ -2,7 +2,7 @@
 // hwt: git worktrees as Herdr spaces, and a ledger for running many coding agents in parallel.
 import pkg from "../package.json" with { type: "json" };
 import { cmdLs, cmdNew, cmdRm, cmdSend, cmdTitle } from "./commands/worktree.ts";
-import { cmdAck, cmdClaim, cmdInbox, cmdMain, cmdNote, cmdStatus, cmdTell, cmdWait } from "./commands/session.ts";
+import { cmdAck, cmdAdopt, cmdClaim, cmdMains, cmdInbox, cmdMain, cmdNote, cmdStatus, cmdTell, cmdWait } from "./commands/session.ts";
 import { cmdMq, cmdTask } from "./commands/queue.ts";
 import { cmdDoctor, cmdHook, cmdInit, cmdShellInit } from "./commands/tools.ts";
 import { cmdInstall, cmdUninstall } from "./commands/install.ts";
@@ -11,17 +11,21 @@ import { HwtError } from "./util.ts";
 const HELP = `hwt ${pkg.version}: git worktrees as Herdr spaces
 
 Worktrees
-  hwt new <branch> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T]
-                   [--task-id ID] [--resume-from ID [--fork]] [--no-space] [--no-hooks]
+  hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T]
+                   [--task-id ID] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks]
+                   (plain folder, no git: the child opens in the folder or --dir, no checkout)
   hwt rm [<branch>] [-f] [-D] [--kill-agents]
   hwt ls
   hwt send <worktree|branch> TEXT        hwt title <worktree|branch> TEXT
 
-Main-session workflow ("mainSession": true in .hwt.json)
-  hwt claim | main | status [--prs] | wait [--timeout S]
-  hwt tell TEXT | inbox [--all] | ack <id>...|--all | note [--branch B] TEXT|--drop N
-  hwt task add TITLE [--touches p1,p2] [--detail T] | ls [--all] | decide <id> now|later|after:<branch> --why T | done|drop <id>
-  hwt mq add [--pr N] [TEXT] | ls [--all] | next | set <id> <state> [--why T] | approve <id>
+Main-session workflow ("mainSession": true in .hwt.json; several mains, each owning its worktrees)
+  hwt claim | adopt <worktree>... | main | status [--prs] | wait [--timeout S]
+  hwt mains [ls] | mains prune [--release] [--dry-run]
+  hwt tell TEXT | inbox [--all] [--log] | ack <id>...|--all | note [--branch B] TEXT|--drop N
+  hwt task add TITLE [--touches p1,p2] [--detail T] | ls [--all] [--every-main] | decide <id> now|later|after:<branch> --why T | done|drop <id>
+  hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT] | ls [--all] | next | log <id>
+  hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]
+  hwt mq approve <id> | drop <id> | prio <id> <n> | set <id> <state> [--why T] [--force]
 
 Setup
   hwt init [--main-session] [--setup CMD] [--lang en|ko]
@@ -42,6 +46,8 @@ async function main(argv: string[]): Promise<void> {
     case "send": return cmdSend(args);
     case "title": return cmdTitle(args);
     case "claim": return cmdClaim();
+    case "adopt": return cmdAdopt(args);
+    case "mains": return cmdMains(args);
     case "main": return cmdMain();
     case "tell": return cmdTell(args);
     case "inbox": return cmdInbox(args);
