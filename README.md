@@ -11,9 +11,15 @@ makes a checkout at `~/.herdr/worktrees/<repo>/feat-login`, runs the repo's setu
 space with an agent (Claude Code by default) working on the task. `hwt rm feat/login -D` closes the space
 and removes the checkout and branch.
 
-On top of that, hwt has an optional **main-session workflow**: one agent in the main checkout talks to you,
-keeps the task list, hands work to agents in worktrees, and merges their PRs one at a time. Its state lives
-in a ledger under `.git/hwt/`, so a restarted session picks up where the last one stopped.
+Outside git, `hwt new docs --task "…"` opens the child in the same folder (or `--dir sub`) with no checkout:
+children share the files, hwt tells them apart by the `HWT_CHILD`/`HWT_PROJECT` it starts them with, and the
+ledger lives in `~/.local/state/hwt/projects/`. Everything but the merge queue works the same.
+
+On top of that, hwt has an optional **main-session workflow**: main sessions talk to you, keep the task
+list, hand work to agents in worktrees, and merge their PRs one at a time. There can be several mains, each
+owning the worktrees it made: by default every agent in the main checkout is one, and a working session can
+become a main of its own with `hwt claim` in its worktree. State lives in a ledger under `.git/hwt/`, so a
+restarted session picks up where the last one stopped.
 
 ## Requirements
 
@@ -57,6 +63,7 @@ hwt init --main-session     # …and the main-session workflow
   "setup": "pnpm install",
   "mainSession": true,
   "mergeApproval": { "paths": ["db/migrations/**", ".github/workflows/**"], "maxLines": 400 },
+  "mergeQueue": { "method": "squash", "verify": "scripts/check-deploy", "gc": "make gc" },
   "agent": "claude",
   "lang": "en"
 }
@@ -65,8 +72,9 @@ hwt init --main-session     # …and the main-session workflow
 | key | meaning |
 | --- | --- |
 | `setup` | Runs once in a checkout `hwt new` creates, in the new space's terminal before the agent starts. Herdr starts that terminal through your login shell, so your PATH (nvm, …) is there. Failing setup is reported, never fatal. |
-| `mainSession` | `new`/`rm` only from the main checkout; working sessions report with `hwt tell`. |
+| `mainSession` | `new`/`rm` only from a main session (the main checkout, or a worktree that claimed); working sessions report to their own main with `hwt tell`. |
 | `mergeApproval` | Merges touching these globs, or bigger than `maxLines`, need the person's yes. |
+| `mergeQueue` | How `hwt mq run` drains the queue: `method` (squash), `verify` (deploy check), `verifyTimeout`, `cleanup` (true), `gc`, `maxUpdates` (3), `base`. |
 | `agent` | Default agent command for `hwt new`. |
 | `lang` | `en` or `ko`: the instructions hwt gives agents and its message tags. |
 
@@ -88,8 +96,8 @@ User defaults go in `~/.config/hwt/config.json` (`root`, `agent`, `lang`). Check
 Worktrees
 
 ```
-hwt new <branch> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T]
-                 [--task-id ID] [--resume-from ID [--fork]] [--no-space] [--no-hooks]
+hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T]
+                 [--task-id ID] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks]
 hwt rm [<branch>] [-f] [-D] [--kill-agents]
 hwt ls | send <worktree> TEXT | title <worktree> TEXT
 ```
@@ -97,10 +105,13 @@ hwt ls | send <worktree> TEXT | title <worktree> TEXT
 Main-session workflow
 
 ```
-hwt claim | main | status [--prs] | wait [--timeout S]
+hwt claim | adopt <worktree>... | main | status [--prs] | wait [--timeout S]
+hwt mains [ls] | mains prune [--release] [--dry-run]
 hwt tell TEXT | inbox [--all] | ack <id>...|--all | note [--branch B] TEXT|--drop N
-hwt task add TITLE [--touches p1,p2] | ls [--all] | decide <id> now|later|after:<branch> --why T | done|drop <id>
-hwt mq add [--pr N] [TEXT] | ls [--all] | next | set <id> <state> [--why T] | approve <id>
+hwt task add TITLE [--touches p1,p2] | ls [--all] [--every-main] | decide <id> now|later|after:<branch> --why T | done|drop <id>
+hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT] | ls [--all] | next | log <id>
+hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]
+hwt mq approve <id> | drop <id> | prio <id> <n> | set <id> <state> [--why T] [--force]
 ```
 
 Setup: `hwt init`, `hwt doctor`, `hwt shell-init`, `hwt hook session-start`.
@@ -121,8 +132,8 @@ handles session ids, so a lost session can be reopened with `hwt new <branch> --
 ## Agent integration
 
 - Claude Code: copy `skills/hwt/SKILL.md` to `~/.claude/skills/hwt/` and add a SessionStart hook running
-  `hwt hook session-start`. In a main-session repo it tells each new session whether it is the main or a
-  working session and what the ledger holds.
+  `hwt hook session-start`. In a main-session repo it claims each session in the main checkout as a main,
+  and tells each new session whether it is a main or a working session and what of the ledger is its own.
 - Other agents: point them at the same SKILL.md from their instructions file.
 
 ## Development

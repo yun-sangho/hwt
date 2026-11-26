@@ -1,12 +1,17 @@
-// Who the main session is, and the guard that keeps new/rm in it.
+// Main sessions: who they are, which one owns what, and the guard that keeps new/rm in them.
+//
+// A repo can have several main sessions. By default a main works in the main checkout (the session-start hook
+// claims every session there); a working session can also become a main of its own with `hwt claim` in its
+// worktree. Each main owns the worktrees it makes, and those working sessions report to it alone.
 import { basename } from "./util.ts";
 import { mainConfig, langFor } from "./config.ts";
-import { samePath, toplevel } from "./git.ts";
+import { samePath } from "./git.ts";
+import { childKey, isGit, workDir } from "./project.ts";
 import * as herdr from "./herdr.ts";
-import { readLedger, updateLedger } from "./ledger.ts";
+import { appendInbox, readLedger, updateLedger, type InboxMessage, type Ledger, type MainRecord } from "./ledger.ts";
 import { sessionFromEnv } from "./agents.ts";
 import { messages } from "./messages.ts";
-import { die, stamp } from "./util.ts";
+import { die, inboxId, stamp } from "./util.ts";
 
 export const mainLabel = (main: string) => `hwt.main=${basename(main)}`;
 
@@ -15,43 +20,160 @@ export function isMainSessionRepo(main: string): boolean {
 }
 
 /**
- * Mark this terminal as the repo's main session: label hwt.main=<repo> and record it in the ledger.
- * The label moves: whichever terminal held it before loses it, so one terminal is the main.
+ * This process's main-session id: its agent session id (it survives a resume and a new terminal), else its hc
+ * terminal. Empty outside any agent and terminal: such a caller sees every main's records.
  */
-export function claimMain(main: string): void {
-  const me = herdr.myTerminal();
-  if (!me) return;
-  const label = mainLabel(main);
-  for (const t of herdr.terminals(label)) if (t.address !== me) herdr.label(t.address, "hwt.main=");
-  herdr.label(me, label);
-  updateLedger(main, (l) => {
-    l.main = { terminal: me, session: sessionFromEnv() || null, claimed: stamp() };
-  });
+export function mainId(): string {
+  return sessionFromEnv() || herdr.myTerminal() || "";
 }
 
 /**
- * Address of the live main session: the newest live terminal labelled hwt.main=<repo>, else the terminal the
- * ledger recorded at the last claim if it is still live. Empty when neither (the main session is down): a
- * terminal's cwd is where it started, not where its agent works, so it never decides who the main is.
+ * The id this caller is known by in the ledger: mainId() if a main has it, else the main whose terminal this is
+ * (a hook may have claimed with a session id the shell doesn't carry). Else mainId(), for records it makes.
  */
-export function resolveMain(main: string): string {
-  const labelled = herdr.terminals(mainLabel(main)).filter(herdr.isLive);
-  if (labelled.length) {
-    const ms = (t: herdr.Terminal) => t.created_ms ?? herdr.terminal(t.address)?.created_ms ?? 0;
-    return labelled.reduce((a, b) => (ms(b) > ms(a) ? b : a)).address;
-  }
-  const recorded = readLedger(main).main?.terminal;
-  const t = recorded ? herdr.terminal(recorded) : null;
+export function selfId(l: Ledger): string {
+  const id = mainId();
+  if (id && l.mains[id]) return id;
+  const t = herdr.myTerminal();
+  const byTerminal = t ? Object.entries(l.mains).find(([, r]) => r.terminal === t)?.[0] : undefined;
+  return byTerminal ?? id;
+}
+
+/** A record with no owner belongs to every main; an empty id (no session at all) sees everything. */
+export function owns(me: string, owner: string | null | undefined): boolean {
+  return !me || !owner || owner === me;
+}
+
+/** The main that owns the worktree on <branch>, if any. */
+export function ownerOf(l: Ledger, branch: string): string | null {
+  return l.worktrees[branch]?.owner ?? null;
+}
+
+export function liveTerminal(r: MainRecord | undefined): string {
+  if (!r?.terminal) return "";
+  const t = herdr.terminal(r.terminal);
   return t && herdr.isLive(t) ? t.address : "";
 }
 
+/** The main this caller is, if it claimed one: its id is in the ledger and it works where it claimed. */
+export function myMain(main: string, l = readLedger(main)): { id: string; record: MainRecord } | null {
+  const id = selfId(l);
+  const r = id ? l.mains[id] : undefined;
+  return r && samePath(r.path, workDir(main, l)) ? { id, record: r } : null;
+}
+
 /**
- * With "mainSession": true in the main checkout's .hwt.json, refuse unless run from the main checkout. Guards new,
- * rm, and the main's own mailbox (inbox, ack, wait): a working session must not mark the main's mail handled.
+ * Whether this caller acts as a main: a claimed main, or anyone who isn't a child session (in a git repo: anyone
+ * in the main checkout; in a folder: anyone hwt didn't start as a child).
  */
-export function mainOnly(main: string, cmd: "new" | "rm" | "inbox" | "ack" | "wait"): void {
+export function actsAsMain(main: string, l = readLedger(main)): boolean {
+  if (myMain(main, l)) return true;
+  const k = childKey(main, l);
+  if (isGit(main)) return !k && samePath(workDir(main, l), main);
+  return !k;
+}
+
+export interface Claim {
+  id: string;
+  terminal: string | null;
+  path: string;
+  /** A worktree's session became a main: the main that owned the worktree before. */
+  promoted_from: string | null;
+  /** Mains that had this terminal before (a new agent session in it): their records came to this one. */
+  took_over: string[];
+}
+
+/**
+ * Register the caller as a main session: in the project root, or as child <child> (a worktree or folder child)
+ * whose session becomes a main of its own (it then owns that child record, and its old main is told). Other
+ * mains stay mains.
+ * A main whose terminal this caller now has is gone (one agent per terminal): its worktrees, tasks and notes
+ * come to this one, so a new session in the same terminal carries on the same work.
+ */
+export function claimMain(main: string, child: string | null, id = mainId()): Claim {
+  if (!id) die("no agent session or hc terminal to name this main session by");
+  const terminal = herdr.myTerminal() || null;
+  if (terminal) herdr.label(terminal, mainLabel(main));
+  const path = child ? (readLedger(main).worktrees[child]?.path ?? die(`no child ${child} in the ledger`)) : main;
+  let promotedFrom: string | null = null;
+  const branch = child ?? "";
+  const tookOver: string[] = [];
+  updateLedger(main, (l) => {
+    l.mains ??= {};
+    if (terminal) {
+      for (const [old, r] of Object.entries(l.mains)) {
+        if (old === id || r.terminal !== terminal) continue;
+        tookOver.push(old);
+        delete l.mains[old];
+      }
+    }
+    const moved = (o: string | null | undefined) => !!o && tookOver.includes(o);
+    for (const w of Object.values(l.worktrees)) if (moved(w.owner)) w.owner = id;
+    for (const t of l.tasks ?? []) if (moved(t.owner)) t.owner = id;
+    for (const n of l.notes) if (moved(n.owner)) n.owner = id;
+    const w = child ? l.worktrees[child] : undefined;
+    if (w) {
+      if (w.owner !== id) promotedFrom = w.owner ?? null;
+      w.owner = id;
+      w.self_main = true;
+    }
+    l.mains[id] = { terminal, session: sessionFromEnv() || (id !== terminal ? id : null), path, claimed: stamp() };
+  });
+  if (promotedFrom && promotedFrom !== id) {
+    const text = messages(langFor(main)).promoted(basename(path), branch);
+    notifyMain(main, promotedFrom, { branch, path, text });
+  }
+  return { id, terminal, path, promoted_from: promotedFrom, took_over: tookOver };
+}
+
+/** Put a message in one main's inbox and, if its terminal is live, in front of it. */
+export function notifyMain(main: string, to: string, m: { branch: string; path: string; text: string }): boolean {
+  const id = inboxId();
+  const me = herdr.myTerminal();
+  appendInbox(main, { id, at: stamp(), from: me, name: "", branch: m.branch, path: m.path, session: sessionFromEnv(), to, text: m.text });
+  const t = liveTerminal(readLedger(main).mains[to]);
+  return !!t && t !== me && herdr.send(t, `${m.text} (hwt inbox ${id})`);
+}
+
+/**
+ * Live terminals a message from <branch> goes to: its owner's, or, for a worktree with no owner, every live
+ * main in the main checkout (they all read unowned mail).
+ */
+export function recipients(main: string, branch: string, l = readLedger(main)): string[] {
+  const owner = ownerOf(l, branch);
+  if (owner) {
+    const t = liveTerminal(l.mains[owner]);
+    return t ? [t] : [];
+  }
+  return [
+    ...new Set(
+      Object.values(l.mains)
+        .filter((r) => samePath(r.path, main))
+        .map(liveTerminal)
+        .filter(Boolean),
+    ),
+  ];
+}
+
+/** Whether <me> reads message <m>: addressed to it, or from a worktree it owns (or nobody owns). */
+export function readsMessage(l: Ledger, me: string, m: InboxMessage): boolean {
+  if (!me) return true;
+  if (m.to) return m.to === me;
+  return owns(me, ownerOf(l, m.branch));
+}
+
+/**
+ * With "mainSession": true in the main checkout's .hwt.json, refuse unless the caller acts as a main (in the
+ * main checkout, or a claimed main in its worktree). Guards new, rm, adopt and a main's own mailbox (inbox, ack,
+ * wait): a working session must not mark its main's mail handled.
+ */
+export function mainOnly(main: string, cmd: "new" | "rm" | "adopt" | "inbox" | "ack" | "wait"): void {
   if (process.env.HWT_ANYWHERE) return;
-  if (!isMainSessionRepo(main)) return;
-  if (samePath(toplevel(), main)) return;
-  die(messages(langFor(main)).mainOnly(main, cmd, resolveMain(main)));
+  // A folder child is always a child, config or not: it shares the folder, so nothing else keeps it in its lane.
+  if (!isMainSessionRepo(main) && !(process.env.HWT_CHILD && !isGit(main))) return;
+  const l = readLedger(main);
+  if (actsAsMain(main, l)) return;
+  const owner = ownerOf(l, childKey(main, l));
+  const now = owner ? liveTerminal(l.mains[owner]) : "";
+  die(messages(langFor(main)).mainOnly(main, cmd, now));
 }

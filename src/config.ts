@@ -14,6 +14,24 @@ export interface MergeApproval {
   maxLines?: number;
 }
 
+/** How `hwt mq run` merges, checks the deploy and cleans up. */
+export interface MergeQueueConfig {
+  /** gh pr merge method. Default "squash". */
+  method?: "squash" | "merge" | "rebase";
+  /** Branch PRs merge into, when a PR doesn't say. Default: origin's HEAD, else the main checkout's branch. */
+  base?: string;
+  /** Deploy check run in the main checkout after the merge (sh -c). Exit 0 = passed. Env: HWT_MQ_ID, _BRANCH, _PR, _SHA. */
+  verify?: string;
+  /** Seconds the deploy check may take. Default 1800. */
+  verifyTimeout?: number;
+  /** The repo's gc, run in the main checkout after the worktree is removed (sh -c). */
+  gc?: string;
+  /** Remove the worktree, its agent and its branches after a verified merge. Default true. */
+  cleanup?: boolean;
+  /** Times the runner brings a PR up to date with its base before returning it. Default 3. */
+  maxUpdates?: number;
+}
+
 /** .hwt.json at the repo root. */
 export interface RepoConfig {
   version?: number;
@@ -22,6 +40,7 @@ export interface RepoConfig {
   /** Main-session workflow: new/rm only from the main checkout, ledger, inbox, merge queue. */
   mainSession?: boolean;
   mergeApproval?: MergeApproval;
+  mergeQueue?: MergeQueueConfig;
   /** Default agent command for `hwt new` in this repo. */
   agent?: string;
   /** Language of the instructions hwt gives agents and of its message tags. */
