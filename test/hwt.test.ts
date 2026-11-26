@@ -149,6 +149,102 @@ describe("new / rm", () => {
     expect(json(ok)).toMatchObject({ spaces_closed: 1, terminals_killed: 1 });
     expect(existsSync(o.path)).toBe(false);
   });
+
+  const exitAgents = () => {
+    const st = fake();
+    for (const t of st.terminals) t.state = "exited";
+    writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(st));
+  };
+
+  test("new --resume-from with its space still open but no live agent: the space is opened again with the agent", () => {
+    config({ mainSession: true });
+    const o = json(hwt(["new", "feat/r", "--title", "R work", "--task", "do r"]));
+    const live = hwt(["new", "feat/r", "--resume-from", o.session]);
+    expect(json(live)).toMatchObject({ reused_space: true, space: o.space });
+    exitAgents(); // a restart: Herdr brings the space back, the agent is gone
+    const missing = hwt(["new", "feat/r", "--resume-from", "no-such-session"]);
+    expect(missing.code).toBe(1);
+    expect(fake().spaces.map((x) => x.id)).toEqual([o.space]); // nothing closed when the agent can't start
+    mkdirSync(join(dir, ".claude", "projects", "p"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "projects", "p", `${o.session}.jsonl`), "");
+    const r = hwt(["new", "feat/r", "--resume-from", o.session]);
+    expect(r.code).toBe(0);
+    const re = json(r);
+    expect(re.reused_space).toBeUndefined();
+    expect(re.space).not.toBe(o.space);
+    expect(fake().spaces.map((x) => x.id)).toEqual([re.space]);
+    const argv = fake().calls.filter((c) => c.cmd === "space.new").at(-1)!.arg.argv as string[];
+    expect(argv).toContain("--resume");
+    expect(argv).toContain(o.session);
+    expect(fake().calls.filter((c) => c.cmd === "space.new").at(-1)!.arg.name).toBe("R work");
+    expect(ledger().worktrees["feat/r"]).toMatchObject({ title: "R work", created: ledger().worktrees["feat/r"].created, terminal: re.terminal });
+    expect(ledger().worktrees["feat/r"].task).toStartWith("do r");
+  });
+
+  test("--agent none with an open space just switches to it", () => {
+    const o = json(hwt(["new", "feat/n", "--agent", "none"]));
+    exitAgents();
+    expect(json(hwt(["new", "feat/n", "--agent", "none"]))).toMatchObject({ reused_space: true, space: o.space });
+  });
+
+  test("rm of a worktree deleted by hand clears git's and the ledger's records", () => {
+    const o = json(hwt(["new", "feat/gone"]));
+    exitAgents();
+    rmSync(o.path, { recursive: true, force: true });
+    const r = hwt(["rm", "feat/gone", "-D"]);
+    expect(r.code).toBe(0);
+    expect(json(r)).toMatchObject({ already_gone: true, branch_deleted: true, spaces_closed: 1 });
+    expect(ledger().worktrees["feat/gone"].state).toBe("removed");
+    expect(sh(["git", "worktree", "list"]).out).not.toContain("feat-gone");
+    expect(json(hwt(["status"])).worktrees ?? []).toEqual([]);
+    expect(hwt(["rm", "feat/never"]).code).toBe(1);
+  });
+
+  test("rm finds a worktree by the branch its session switched to; status keeps its record", () => {
+    config({ mainSession: true });
+    const o = json(hwt(["new", "feat/old", "--no-space", "--title", "Old"]));
+    sh(["git", "switch", "-q", "-c", "feat/new"], o.path);
+    const st = json(hwt(["status"]));
+    expect(st.ledger_only).toEqual([]);
+    expect(st.worktrees.find((w: { branch: string }) => w.branch === "feat/new")).toMatchObject({ title: "Old" });
+    const r = hwt(["rm", "feat/new", "-D"]);
+    expect(r.code).toBe(0);
+    expect(json(r)).toMatchObject({ branch: "feat/new", branch_deleted: true });
+    expect(existsSync(o.path)).toBe(false);
+    expect(ledger().worktrees["feat/old"].state).toBe("removed");
+  });
+
+  test("rm when something keeps writing into the checkout: stops it and removes; a failure says not to delete by hand", () => {
+    writeFileSync(join(repo, ".gitignore"), "out/\n");
+    sh(["git", "add", ".gitignore"]);
+    sh(["git", "commit", "-qm", "ignore"]);
+    const o = json(hwt(["new", "feat/busy", "--no-space"]));
+    const writer = Bun.spawn(["sh", "-c", "while :; do mkdir -p out && touch out/$$.$RANDOM 2>/dev/null; done"], { cwd: o.path, stderr: "ignore" });
+    try {
+      const r = hwt(["rm", "feat/busy"]);
+      expect(r.code).toBe(0);
+      expect(existsSync(o.path)).toBe(false);
+      expect(ledger().worktrees["feat/busy"].state).toBe("removed");
+      const stopped = json(r).processes_stopped as number[] | undefined;
+      if (stopped) expect(stopped).toContain(writer.pid);
+    } finally {
+      writer.kill();
+    }
+
+    const p = json(hwt(["new", "feat/stuck", "--no-space"])).path;
+    mkdirSync(join(p, "out"));
+    writeFileSync(join(p, "out", "f"), "x");
+    chmodSync(join(p, "out"), 0o555);
+    try {
+      const r = hwt(["rm", "feat/stuck"]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("don't delete the folder by hand");
+      expect(ledger().worktrees["feat/stuck"].state).toBe("active");
+    } finally {
+      chmodSync(join(p, "out"), 0o755);
+    }
+    expect(hwt(["rm", "feat/stuck"]).code).toBe(0);
+  });
 });
 
 describe("main-session workflow", () => {

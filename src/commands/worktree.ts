@@ -1,16 +1,16 @@
 // hwt new / rm / ls / send / title
-import { existsSync, rmdirSync } from "node:fs";
+import { existsSync, rmdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse } from "../args.ts";
 import { adapterFor } from "../agents.ts";
 import { checkoutConfig, defaultAgent, langFor, mainConfig, worktreesRoot } from "../config.ts";
-import { currentBranch, git, gitOut, isDirty, realpath, samePath, toplevel } from "../git.ts";
+import { currentBranch, git, gitOut, isDirty, realpath, samePath, toplevel, worktreeList } from "../git.ts";
 import { childKey, findChild, isGit, projectRoot } from "../project.ts";
 import * as herdr from "../herdr.ts";
-import { readLedger, updateLedger } from "../ledger.ts";
+import { type Ledger, readLedger, updateLedger } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
 import { claimMain, isMainSessionRepo, mainOnly, selfId } from "../session.ts";
-import { basename, die, printJson, run, shQuote, shellWords, slug, stamp, warn } from "../util.ts";
+import { basename, die, printJson, run, runOut, shQuote, shellWords, sleepMs, slug, stamp, warn } from "../util.ts";
 
 const NEW_USAGE = "hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T] [--task-id ID] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks]";
 
@@ -108,17 +108,20 @@ export function cmdNew(args: string[]): void {
     return;
   }
 
-  // Already open in a space: show it instead of making a second one. (A folder is shared: others' spaces are there.)
-  const open = folder ? undefined : herdr.spacesIn(wt)[0];
-  if (open) {
-    herdr.selectSpace(open);
-    warn("already open, switched to its space");
-    printJson({ ...base, space: open, terminal: null, reused_space: true });
-    return;
-  }
-
   const agentLine = a.opt.agent ?? defaultAgent(main);
   const none = agentLine === "" || agentLine === "none";
+
+  // Already open in a space. With its agent live (or no agent asked for), show it instead of making a second
+  // one. A space with no live agent is one Herdr restored after a restart or whose agent exited: it is closed
+  // and opened again with the agent, so `--resume-from` brings the session back. (A folder is shared: others'
+  // spaces are there.)
+  const open = folder ? [] : herdr.spacesIn(wt);
+  if (open.length && (none || agentIn(wt))) {
+    herdr.selectSpace(open[0]!);
+    warn("already open, switched to its space");
+    printJson({ ...base, space: open[0], terminal: null, reused_space: true });
+    return;
+  }
   let argv: string[] = [];
   let session: string | null = null;
   let kind = "none";
@@ -148,17 +151,27 @@ export function cmdNew(args: string[]): void {
     argv = ["env", `HWT_PROJECT=${main}`, `HWT_CHILD=${branch}`, ...(argv.length ? argv : shell)];
   }
 
-  // Record the worktree before the agent starts: its first `hwt tell` may come within seconds.
+  // Record the worktree before the agent starts: its first `hwt tell` may come within seconds. Reopened
+  // (--resume-from, usually with no --task or --title), it keeps the title, task and age it had.
   updateLedger(main, (l) => {
+    const prev = l.worktrees[branch]?.state === "active" ? l.worktrees[branch] : undefined;
     l.worktrees[branch] = {
-      path: wt, title, agent: kind, terminal: null, name: null, session, task: task.slice(0, 600), owner, created: stamp(), state: "active",
+      path: wt, title: title || prev?.title || "", agent: kind, terminal: null, name: null, session,
+      task: task ? task.slice(0, 600) : (prev?.task ?? ""), owner: owner ?? prev?.owner ?? null,
+      created: prev?.created ?? stamp(), state: "active",
       ...(folder ? { kind: "folder" as const } : {}),
     };
   });
   // The space is named after the work and its tab after the worktree, so the sidebar shows
   // "<title> <branch>" and the Agents panel "<title> · <worktree>". Without a title, the tab gets the branch.
   const name = folder ? branch : basename(wt);
-  const r = herdr.newSpace({ folder: wt, name: title || undefined, tab: title ? name : branch, argv, focus: false });
+  // Only now that the agent can start (its session was found): the old space goes.
+  if (open.length) {
+    warn(`no live agent in ${basename(wt)}: closing its space (and any terminal left there) to open it again with the agent`);
+    for (const id of open) herdr.closeSpace(id);
+  }
+  const spaceTitle = title || readLedger(main).worktrees[branch]?.title || "";
+  const r = herdr.newSpace({ folder: wt, name: spaceTitle || undefined, tab: spaceTitle ? name : branch, argv, focus: false });
   if (!r.ok) die(`herdr-app space.new failed: ${r.error}`);
   const { space, tab, terminal } = r.value;
   // hc can't name a terminal after the fact: the worktree goes on a label (hwt tell and send read it).
@@ -184,6 +197,10 @@ export interface RmResult {
   branch_deleted: boolean;
   spaces_closed: number;
   terminals_killed: number;
+  /** The checkout was already gone (deleted by hand): only git's and the ledger's records were cleared. */
+  already_gone?: boolean;
+  /** Processes still working in the checkout that were stopped so it could be removed. */
+  processes_stopped?: number[];
 }
 
 /**
@@ -216,32 +233,122 @@ function removeFolderChild(main: string, target: string | undefined, o: RmOption
   return { removed: w.path, branch: name, branch_deleted: false, spaces_closed: spaces, terminals_killed: live ? 1 : 0 };
 }
 
+/** Active ledger records of the worktree at <wt>, whatever branch it is on now. */
+function recordsAt(l: Ledger, wt: string, branch: string): string[] {
+  return Object.entries(l.worktrees)
+    .filter(([k, w]) => w.state === "active" && (k === branch || samePath(w.path, wt) || w.path === wt))
+    .map(([k]) => k);
+}
+
+/** Pids of processes whose working directory is <dir> or below it, except this hwt and the shells it runs in. */
+function processesIn(dir: string): number[] {
+  const out = runOut(["lsof", "-n", "-d", "cwd", "-F", "pn"]);
+  if (!out) return [];
+  const mine = new Set<number>();
+  const parents = new Map<number, number>();
+  for (const line of (runOut(["ps", "-A", "-o", "pid=,ppid="]) ?? "").split("\n")) {
+    const [p, pp] = line.trim().split(/\s+/).map(Number);
+    if (p) parents.set(p, pp ?? 0);
+  }
+  for (let p = process.pid; p > 1 && !mine.has(p); p = parents.get(p) ?? 0) mine.add(p);
+  const hits: number[] = [];
+  let pid = 0;
+  for (const line of out.split("\n")) {
+    if (line[0] === "p") pid = Number(line.slice(1));
+    else if (line[0] === "n") {
+      const p = line.slice(1);
+      if (pid && !mine.has(pid) && (p === dir || p.startsWith(dir + "/"))) hits.push(pid);
+    }
+  }
+  return [...new Set(hits)];
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * git worktree remove, and when it fails (a dev server still writing build output into the checkout: "Directory
+ * not empty"), stop the processes still working in it and try once more. The checkout was checked clean (or the
+ * caller passed -f), so what is left is theirs. Returns the pids it stopped.
+ */
+function removeCheckout(main: string, wt: string, force: boolean, killAgents: boolean): number[] {
+  const remove = (f: boolean) => run(["git", "worktree", "remove", ...(f ? ["--force"] : []), wt], { cwd: main, passthrough: true }).ok;
+  if (remove(force)) return [];
+  const pids = processesIn(wt);
+  // An agent started outside Herdr is no leftover: same rule as an agent terminal.
+  const agents = pids.filter((p) => /^(claude|codex)$/.test(basename(runOut(["ps", "-o", "comm=", "-p", String(p)]) ?? "")));
+  if (agents.length && !killAgents) {
+    die(`git worktree remove failed for ${wt}, and agents are working in it: ${agents.join(" ")} (pass --kill-agents to stop them)`);
+  }
+  for (const p of pids) {
+    try {
+      process.kill(p, "SIGTERM");
+    } catch {}
+  }
+  for (let i = 0; i < 30 && pids.some(alive); i++) sleepMs(100);
+  if (pids.length) warn(`stopped processes still working in ${wt}: ${pids.join(" ")}`);
+  if (remove(true)) return pids;
+  // git let go of it but the folder came back (something wrote into it again): the files are leftovers.
+  if (existsSync(wt) && !worktreeList(main).some((w) => samePath(w.path, wt))) {
+    try {
+      rmSync(wt, { recursive: true, force: true });
+      return pids;
+    } catch (e) {
+      die(`git let go of ${wt}, but what is left of it can't be deleted (${(e as Error).message})\n  ${BY_HAND}`);
+    }
+  }
+  const left = processesIn(wt);
+  die(
+    `git worktree remove failed for ${wt}` +
+      (left.length ? ` (still working in it: ${left.join(" ")}; see ps -p ${left.join(",")})` : "") +
+      `\n  ${BY_HAND}`,
+  );
+}
+
+const BY_HAND = "don't delete the folder by hand: fix what is in the way and run hwt rm again, so the ledger follows";
+
 /** hwt rm without the guard and the printing: the merge queue runner cleans up through this too. */
 export function removeWorktree(main: string, target: string | undefined, o: RmOptions = {}): RmResult {
   if (!isGit(main)) return removeFolderChild(main, target, o);
   let wt: string;
   let branch: string;
+  const l0 = readLedger(main);
   if (!target) {
     wt = toplevel() ?? die("not in a checkout");
     branch = currentBranch();
     if (samePath(wt, main)) die("this is the main checkout; name a branch");
-  } else if (existsSync(target)) {
+  } else if (existsSync(target) && !l0.worktrees[target]) {
     wt = realpath(target);
     branch = currentBranch(wt);
   } else {
+    // The ledger's branch, a worktree name, or the branch a worktree is on now (its session may have switched).
     branch = target;
-    wt = readLedger(main).worktrees[target]?.path ?? join(worktreesRoot(), basename(main), slug(target));
+    wt =
+      (l0.worktrees[target]?.state === "active" ? l0.worktrees[target]!.path : undefined) ??
+      findChild(l0, target)?.[1].path ??
+      worktreeList(main).find((w) => w.branch === target)?.path ??
+      l0.worktrees[target]?.path ??
+      join(worktreesRoot(), basename(main), slug(target));
+    if (existsSync(wt)) branch = currentBranch(wt) || target;
   }
-  if (!existsSync(wt)) die(`no worktree at ${wt}`);
+  const records = recordsAt(l0, wt, branch);
+  const gone = !existsSync(wt);
+  if (gone && !records.length) die(`no worktree at ${wt}`);
   if (samePath(wt, main)) die("refusing to remove the main checkout");
-  if (!o.force && isDirty(wt)) die(`${wt} has uncommitted changes (pass -f to discard them)`);
+  if (!gone && !o.force && isDirty(wt)) die(`${wt} has uncommitted changes (pass -f to discard them)`);
 
   // An agent whose terminal sits in the checkout may still be working (its cwd stays where it started).
   // Killing it cuts its turn off mid-way, so refuse unless the caller checked it and passes --kill-agents.
   const me = herdr.myTerminal();
-  const inside = herdr.terminals().filter((t) => herdr.isLive(t) && t.address !== me && herdr.inDir(t, wt));
+  const inside = () => herdr.terminals().filter((t) => herdr.isLive(t) && t.address !== me && herdr.inDir(t, wt));
   if (!o.killAgents) {
-    const agents = inside.filter(herdr.isAgent);
+    const agents = inside().filter(herdr.isAgent);
     if (agents.length) {
       die(
         `agent terminals are live in ${wt} (check them with hc read <id>; pass --kill-agents to remove anyway):\n` +
@@ -252,11 +359,22 @@ export function removeWorktree(main: string, target: string | undefined, o: RmOp
   // There is no teardown: whatever the checkout leaves behind (databases, ports, dev servers) is the repo's
   // to reclaim with its own gc, run by the main session after rm.
 
-  // Look up spaces first; close them last, since the caller may be running inside one.
+  // Look up spaces first; close them last, since the caller may be running inside one. Other terminals in the
+  // checkout go first: a dev server left running there keeps writing into it and makes the remove fail.
   const ids = herdr.spacesIn(wt);
+  let killed = 0;
+  for (const t of inside()) {
+    herdr.kill(t.address);
+    killed++;
+  }
   process.chdir(main);
-  if (!run(["git", "worktree", "remove", ...(o.force ? ["--force"] : []), wt], { cwd: main, passthrough: true }).ok) {
-    die("git worktree remove failed");
+  let stopped: number[] = [];
+  if (gone) {
+    // Deleted by hand (or the remove got half way): forget it in git and in the ledger.
+    git(["worktree", "prune"], main);
+    warn(`${wt} is already gone; recording it as removed`);
+  } else {
+    stopped = removeCheckout(main, wt, !!o.force, !!o.killAgents);
   }
   try {
     rmdirSync(join(wt, "..")); // the repo's folder under the worktrees root, once empty
@@ -264,14 +382,18 @@ export function removeWorktree(main: string, target: string | undefined, o: RmOp
   let deleted = false;
   if (o.deleteBranch && branch) deleted = run(["git", "branch", "-D", branch], { cwd: main, passthrough: true }).ok;
   for (const id of ids) herdr.closeSpace(id);
-  // Terminals still sitting in the checkout (a space Herdr hadn't shown yet, or one started by hand).
-  const left = herdr.terminals().filter((t) => herdr.isLive(t) && t.address !== me && herdr.inDir(t, wt));
-  for (const t of left) herdr.kill(t.address);
+  // Terminals that showed up in the checkout meanwhile (a space Herdr hadn't shown yet, or one started by hand).
+  for (const t of inside()) {
+    herdr.kill(t.address);
+    killed++;
+  }
   updateLedger(main, (l) => {
-    const w = l.worktrees[branch];
-    if (w) Object.assign(w, { state: "removed", removed: stamp() });
+    for (const k of new Set([...records, ...recordsAt(l, wt, branch)])) Object.assign(l.worktrees[k]!, { state: "removed", removed: stamp() });
   });
-  return { removed: wt, branch, branch_deleted: deleted, spaces_closed: ids.length, terminals_killed: left.length };
+  return {
+    removed: wt, branch, branch_deleted: deleted, spaces_closed: ids.length, terminals_killed: killed,
+    ...(gone ? { already_gone: true } : {}), ...(stopped.length ? { processes_stopped: stopped } : {}),
+  };
 }
 
 export function cmdRm(args: string[]): void {
@@ -312,7 +434,7 @@ export function cmdSend(args: string[]): void {
     if (!existsSync(wt)) die(`no worktree for ${target}`);
     to = agentIn(wt);
     label = basename(wt);
-    title = l.worktrees[currentBranch(wt)]?.title ?? "";
+    title = (hit?.[1] ?? l.worktrees[currentBranch(wt)] ?? Object.values(l.worktrees).find((w) => w.state === "active" && samePath(w.path, wt)))?.title ?? "";
   } else {
     const [name, w] = hit ?? die(`no child ${target}`);
     const t = w.terminal ? herdr.terminal(w.terminal) : null;

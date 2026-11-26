@@ -97,7 +97,7 @@ hwt mq add --pr <n> "요약"    # push 하고 PR 을 연 뒤. 머지될 때까�
 ```sh
 hwt new feat/x --title "T3 로그인 수정" --task "<지시>" [--task-id <id>]
 hwt new feat/x --agent codex --task "…"
-hwt new feat/x --resume-from <session id> [--fork]
+hwt new feat/x --resume-from <session id> [--fork]   # 재시작 뒤 에이전트 없이 스페이스만 열려 있어도 된다
 hwt new feat/x --agent none        # 셸만
 hwt new feat/x --no-space          # 체크아웃만
 hwt new docs --task "…" [--dir sub] # 일반 폴더: 체크아웃 없이 이 폴더(또는 sub)에 자식
@@ -130,4 +130,6 @@ hwt rm docs --kill-agents          # 일반 폴더: 그 자식의 스페이스�
 - 체크아웃 안에 에이전트 터미널이 살아 있으면 거부한다: `hc read <id>` 로 일하고 있지 않은지 확인한 뒤 `--kill-agents`
 - 커밋 안 된 변경이 있으면 거부한다. `-f`(변경 버리기)는 사용자가 명시적으로 허락했을 때만
 - `-D` 는 브랜치가 머지됐거나 사용자가 허락했을 때만
+- 작업 세션이 브랜치를 바꿨어도 지금 브랜치 이름으로 찾는다. 체크아웃에 계속 쓰는 프로세스(dev 서버)가 있으면 멈추고 다시 지운다. 손으로 이미 지운 워크트리는 지운 것으로 기록한다
+- 그래도 실패하면 메시지가 말하는 것을 고치고 `hwt rm` 을 다시 한다. 워크트리를 손으로 `rm -rf` 하거나 터미널을 `hc kill` 하지 않는다: 장부에 active 로 남는다
 - 내가 만들지 않은 워크트리(사용자나 다른 에이전트 것)는 묻지 않고 지우지 않는다
