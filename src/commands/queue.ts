@@ -261,11 +261,16 @@ export function cmdMq(args: string[]): void {
       const main = projectRoot();
       const id = a.pos[0] ?? die("usage: hwt mq approve <id> [--why TEXT]");
       const by = selfId(readLedger(main)) || "user";
-      withItem(main, id, (m) => {
+      const item = withItem(main, id, (m) => {
         Object.assign(m, { approved: stamp(), approved_why: a.opt.why ?? "" });
         if (m.state === "waiting_user") move(m, "queued", by, `approved${a.opt.why ? `: ${a.opt.why}` : ""}`);
       });
-      return;
+      // The main goes on with its work: the runner merges, and the result comes to it as a message.
+      return printJson({
+        approved: id, branch: item.branch, state: item.state,
+        runner: liveDaemon() ? "daemon" : "none: run hwt mq run --watch in the background",
+        next: "don't wait or poll for the merge; [merged], [deploy failed] or [merge returned] comes to you",
+      });
     }
     case "drop": {
       const a = parse(rest, { opts: ["why"] }, "hwt mq drop <id> [--why TEXT]");

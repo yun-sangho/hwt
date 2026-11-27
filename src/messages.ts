@@ -18,6 +18,7 @@ export interface Messages {
     baseUpdated: string;
     deployFailed: string;
     unblocked: string;
+    merged: string;
   };
   /** After the runner merged the base into a PR branch: what the working session does. */
   baseUpdated: string;
@@ -47,6 +48,7 @@ const en: Messages = {
     baseUpdated: "[base updated]",
     deployFailed: "[deploy failed]",
     unblocked: "[unblocked]",
+    merged: "[merged]",
   },
   baseUpdated: "the merge queue merged the base into your PR branch; git pull before you commit more. CI runs again, nothing else to do",
   requeue: "Fix it, push, then hwt mq add --pr <n> again (you keep your place in line)",
@@ -101,6 +103,7 @@ const ko: Messages = {
     baseUpdated: "[베이스 반영]",
     deployFailed: "[배포 확인 실패]",
     unblocked: "[선행 완료]",
+    merged: "[머지 완료]",
   },
   baseUpdated: "머지 큐가 베이스 브랜치를 PR 브랜치에 반영했다. 더 커밋하기 전에 git pull 한다. CI 는 다시 돌고, 따로 할 일은 없다",
   requeue: "고쳐서 push 한 뒤 hwt mq add --pr <n> 을 다시 한다(줄 순서는 유지된다)",

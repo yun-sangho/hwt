@@ -620,11 +620,20 @@ export function runQueue(main: string, o: RunOptions): RunReport {
   };
 
   /** After a passed (or no) deploy check: remove the worktree, gc, fast-forward, close the task. */
+  /** Done: the owning main hears it (awake), so it never has to wait or poll for a merge. */
+  const done = (x: Merge, why: string | null) => {
+    moveItem(x.id, "done", why);
+    const owner = ownerOf(readLedger(main), x.branch);
+    const text = `${m.tags.merged} ${x.id} ${x.branch}${x.pr ? ` PR #${x.pr}` : ""}${why ? ` (${why})` : ""}`;
+    // A main that ran the runner itself has the result in its output already.
+    if (owner && owner !== o.by) notifyMain(main, owner, { branch: x.branch, path: main, text, wake: true });
+  };
+
   const cleanUp = (x: Merge): void => {
     const { id } = x;
     const verified = x.state === "cleaning";
     if (!cfg.cleanup) {
-      moveItem(id, "done", null);
+      done(x, null);
       return;
     }
     if (!verified) moveItem(id, "cleaning", null);
@@ -663,7 +672,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     for (const t of report.unblocked_tasks.slice(previouslyUnblocked).filter((t) => t.owner)) {
       notifyMain(main, t.owner!, { branch: x.branch, path: main, text: `${m.tags.unblocked} ${t.id} ${t.title} (after:${x.branch} merged)`, wake: true });
     }
-    moveItem(id, "done", notes.join("; ") || null);
+    done(x, notes.join("; ") || null);
   };
 
   const giveBackMerge = (x: Merge, why: string, rebase = false) => {
