@@ -10,6 +10,7 @@ import { readLedger, stateDir, unackedInbox } from "../ledger.ts";
 import { messages, selfCommand } from "../messages.ts";
 import { claimMain, isMainSessionRepo, mainId, noteIsOver, owns } from "../session.ts";
 import { basename, die, has, printJson, run, runOut, warn } from "../util.ts";
+import { liveDaemon, serviceInstalled } from "../daemon.ts";
 import { claudeDir, claudeHookInstalled, codexBlockInstalled, codexDir, ourSkill } from "./install.ts";
 
 const INIT_USAGE = "hwt init [--main-session] [--setup CMD] [--lang en|ko] [--force]";
@@ -110,6 +111,13 @@ export function cmdDoctor(): void {
   if (has("codex") || existsSync(codexDir())) {
     const ok = ourSkill(join(codexDir(), "skills", "hwt", "SKILL.md")) && codexBlockInstalled();
     add("codex integration", ok, false, ok ? `skill and AGENTS.md block in ${codexDir()}` : "run: hwt install codex");
+  }
+  {
+    const d = liveDaemon();
+    const svc = process.platform === "darwin" && serviceInstalled();
+    add("merge-queue daemon", true, false, d
+      ? `running (pid ${d.pid}${svc ? ", launchd" : ""})`
+      : svc ? "installed in launchd but not running: see hwt mq daemon status" : "off: a main runs hwt mq run, or start one with hwt mq daemon install");
   }
   add("user config", true, false, existsSync(userConfigPath()) ? userConfigPath() : `${userConfigPath()} (none, defaults)`);
 

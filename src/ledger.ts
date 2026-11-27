@@ -10,7 +10,8 @@
 // The format is the one the original zsh hwt wrote, so both can read the same ledger.
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { stateDirFor } from "./project.ts";
+import { isGit, stateDirFor } from "./project.ts";
+import { rememberRepo } from "./repos.ts";
 import { die, shQuote, sleepMs } from "./util.ts";
 
 /** A main session. Its id is its agent session id, else its hc terminal (see mainId). */
@@ -225,6 +226,8 @@ export function updateLedger(main: string, change: (l: Ledger) => void): Ledger 
     writeFileSync(tmp, JSON.stringify(l, null, 2) + "\n");
     if (existsSync(f)) copyFileSync(f, f + ".bak");
     renameSync(tmp, f);
+    // The merge-queue daemon looks at every git repo whose ledger hwt writes.
+    if (isGit(main)) rememberRepo(main);
     return l;
   } finally {
     try {

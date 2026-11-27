@@ -114,6 +114,7 @@ hwt tell TEXT | inbox [--all] [--log] | ack <id>...|--all | note [--branch B] TE
 hwt task add TITLE [--touches p1,p2] | ls [--all] [--every-main] | decide <id> now|later|after:<branch> --why T | done|drop <id>
 hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT] | ls [--all] | next | log <id>
 hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]
+hwt mq daemon [--interval S] [--once] | daemon status | daemon install [--interval S] | daemon uninstall
 hwt mq approve <id> | drop <id> | prio <id> <n> | set <id> <state> [--why T] [--force]
 ```
 
@@ -121,6 +122,14 @@ While a PR waits in GitHub's merge queue, the runner checks the other PRs and se
 It can also submit eligible PRs up to each GitHub queue's reported build limit. The runner waits for
 dependencies declared with `--after` and serializes submissions when `mergeQueue.verify` or
 `mergeQueue.gc` is configured. Use `hwt mq next` or `hwt mq run --dry-run` to inspect the plan.
+
+`hwt mq daemon` is the same runner as one long-lived process for the whole computer: every round
+(default 60 s) it takes each repo whose ledger hwt has written (remembered in
+`~/.local/state/hwt/repos.json`) and drains its queue, skipping a repo whose queue a main's
+`mq run --watch` holds. Only one daemon runs at a time. `hwt mq daemon install` keeps it up with
+launchd on macOS (log: `~/Library/Logs/hwt/mq-daemon.log`); it records your current `PATH`, so
+`gh`, `hc` and your repos' `verify`/`gc` commands resolve the same as in your shell. Rerun install
+after changing `PATH`. A long deploy check in one repo delays the others for that round.
 
 Setup: `hwt init`, `hwt doctor`, `hwt install` / `uninstall`, `hwt hook session-start`.
 
