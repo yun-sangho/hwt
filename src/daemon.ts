@@ -168,8 +168,11 @@ const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 /** The hwt to start: an absolute path (launchd has no PATH lookup for the program). */
 function selfArgv(): string[] {
   const words = shellWords(selfCommand());
-  if (!words[0]!.startsWith("/")) words[0] = Bun.which(words[0]!) ?? die(`can't find ${words[0]} on PATH`);
-  return words;
+  if (words[0]!.startsWith("/")) return words;
+  const found = Bun.which(words[0]!);
+  if (found) return [found, ...words.slice(1)];
+  // Not on PATH: this very hwt (a compiled binary, or bun with the script).
+  return /\/bun(-\w+)?$/.test(process.execPath) ? [process.execPath, process.argv[1]!] : [process.execPath];
 }
 
 export function plist(interval: number): string {
