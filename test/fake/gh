@@ -23,7 +23,22 @@ const squash = (pr: FakePr) => {
   Object.assign(pr, { state: "MERGED", sha: c });
 };
 
+const flag = (name: string) => {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+};
+
 if (args[0] === "--version") out("gh 0.0.0-fake");
+else if (args[0] === "run" && args[1] === "list") {
+  const wf = flag("--workflow");
+  const sha = flag("--commit");
+  const runs = (s.runs ?? []).filter((r) => r.workflow === wf && r.sha === sha);
+  for (const r of runs) {
+    if (r.completeAfter !== undefined && --r.completeAfter <= 0) Object.assign(r, { status: "completed", conclusion: r.then ?? "success", completeAfter: undefined });
+  }
+  save(s);
+  out(runs.map(({ databaseId, status, conclusion }) => ({ databaseId, status, conclusion, url: `https://github.com/test/repo/actions/runs/${databaseId}` })));
+}
 else if (args[0] === "auth") process.exit(0);
 else if (args[0] === "api" && args[1] === "graphql") {
   const id = arg("id")?.replace(/^PR_/, "");
