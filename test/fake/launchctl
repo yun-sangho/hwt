@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake launchctl for tests: records each call, loads nothing.
+echo "$*" >> "$HOME/launchctl.calls"

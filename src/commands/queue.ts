@@ -15,6 +15,8 @@ import {
 } from "../mq.ts";
 import type { Merge } from "../ledger.ts";
 import { actsAsMain, ownerOf, owns, selfId } from "../session.ts";
+import { daemonLog, installService, liveDaemon, runDaemon, serviceInstalled, uninstallService } from "../daemon.ts";
+import { knownRepos } from "../repos.ts";
 
 // ---- Tasks ------------------------------------------------------------------------------
 // Anyone may add (the person via a main session, or a working session that found more work); a task belongs
@@ -117,6 +119,7 @@ export function cmdTask(args: string[]): void {
 const MQ_USAGE = `hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT]
        mq ls [--all] | next | log <id>
        mq run [--watch] [--interval S] [--timeout S] [--dry-run]
+       mq daemon [--interval S] [--once] | daemon status | daemon install [--interval S] | daemon uninstall
        mq approve <id> [--why T] | drop <id> [--why T] | prio <id> <n> | set <id> <state> [--why T] [--force]`;
 
 /** Find item <id>, change it under the ledger lock, or die when there is none. */
@@ -132,6 +135,7 @@ function withItem(main: string, id: string, change: (m: Merge) => void): Merge {
 export function cmdMq(args: string[]): void {
   const [sub = "ls", ...rest] = args;
   const help = [sub, ...rest].some((x) => x === "--help" || x === "-h");
+  if (sub === "daemon" && !help) return cmdDaemon(rest);
   if (!help) requireGit(projectRoot(), "the merge queue");
   switch (sub) {
     case "--help":
@@ -173,7 +177,10 @@ export function cmdMq(args: string[]): void {
       });
       // A log entry only: the runner takes it from the queue; the main is woken only if it needs a decision.
       tell(`${messages(langFor(main)).tags.mergeRequest} ${id} ${b}${pr ? ` PR #${pr}` : ""}${text ? ` — ${text}` : ""}`, { wake: false });
-      return printJson({ merge: id, branch: b, state: "queued", place_kept: kept !== undefined });
+      return printJson({
+        merge: id, branch: b, state: "queued", place_kept: kept !== undefined,
+        runner: liveDaemon() ? "daemon" : "main (hwt mq run)",
+      });
     }
     case "ls": {
       const main = projectRoot();
@@ -231,6 +238,8 @@ export function cmdMq(args: string[]): void {
       const main = projectRoot();
       if (!a.flag["dry-run"] && !actsAsMain(main)) die("mq run is a main session's (a working session asks with hwt mq add)");
       const by = selfId(readLedger(main)) || "runner";
+      const d = liveDaemon();
+      if (d && !a.flag["dry-run"]) process.stderr.write(`hwt: note: the merge-queue daemon is running (pid ${d.pid}); it drains this queue too\n`);
       const report = runQueue(main, {
         watch: !!a.flag.watch,
         interval: Number(a.opt.interval ?? 30),
@@ -285,5 +294,56 @@ export function cmdMq(args: string[]): void {
     }
     default:
       die(`usage: ${MQ_USAGE}`);
+  }
+}
+
+// ---- Daemon -------------------------------------------------------------------------------
+// One process per computer for every repo's queue (daemon.ts). Not tied to a main: it starts anywhere.
+
+const DAEMON_USAGE = "hwt mq daemon [--interval S] [--once] | daemon status | daemon install [--interval S] | daemon uninstall";
+
+function cmdDaemon(args: string[]): void {
+  const [sub, ...rest] = args[0] && !args[0].startsWith("-") ? args : ["run", ...args];
+  const interval = (a: ReturnType<typeof parse>) => {
+    const n = Number(a.opt.interval ?? 60);
+    if (!Number.isFinite(n) || n < 5) die(`--interval needs seconds (5 or more): ${a.opt.interval}`);
+    return n;
+  };
+  switch (sub) {
+    case "run": {
+      const a = parse(rest, { opts: ["interval"], flags: ["once"] }, DAEMON_USAGE);
+      return runDaemon({
+        interval: interval(a),
+        once: !!a.flag.once,
+        remove: (main, branch) => void removeWorktree(main, branch, { deleteBranch: true, killAgents: true }),
+      });
+    }
+    case "status": {
+      const d = liveDaemon();
+      const repos = knownRepos().map((repo) => {
+        if (!existsSync(repo) || !isGit(repo)) return { repo, gone: true };
+        try {
+          const l = readLedger(repo);
+          const open = (l.merges ?? []).filter((m) => OPEN.includes(m.state));
+          return { repo, open: open.length, waiting_user: open.filter((m) => m.state === "waiting_user" && !m.approved).length };
+        } catch (e) {
+          return { repo, error: (e as Error).message };
+        }
+      });
+      return printJson({
+        running: !!d, pid: d?.pid ?? null, host: d?.host ?? null, since: d?.since ?? null,
+        last_round: d ? new Date(d.beat).toISOString() : null, interval: d?.interval ?? null,
+        service: process.platform === "darwin" ? serviceInstalled() : null, log: process.platform === "darwin" ? daemonLog() : null,
+        repos,
+      }, true);
+    }
+    case "install": {
+      const a = parse(rest, { opts: ["interval"] }, DAEMON_USAGE);
+      return printJson(installService(interval(a)));
+    }
+    case "uninstall":
+      return printJson(uninstallService());
+    default:
+      die(`usage: ${DAEMON_USAGE}`);
   }
 }

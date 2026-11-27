@@ -27,6 +27,8 @@ Main-session workflow ("mainSession": true in .hwt.json; several mains, each own
   hwt task add TITLE [--touches p1,p2] [--detail T] | ls [--all] [--every-main] | decide <id> now|later|after:<branch> --why T | done|drop <id>
   hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT] | ls [--all] | next | log <id>
   hwt mq run [--watch] [--interval S] [--timeout S] [--dry-run]
+  hwt mq daemon [--interval S] [--once] | daemon status | daemon install [--interval S] | daemon uninstall
+                   (one process per computer that drains every repo's queue; install = launchd, macOS)
   hwt mq approve <id> | drop <id> | prio <id> <n> | set <id> <state> [--why T] [--force]
 
 Setup

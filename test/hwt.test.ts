@@ -697,6 +697,81 @@ describe("merge queue runner", () => {
     hwt(["claim"], t1);
   });
 
+  test("daemon: one process, started anywhere, drains every repo hwt has seen", () => {
+    const stateHome = join(dir, ".local", "state", "hwt");
+    expect(JSON.parse(readFileSync(join(stateHome, "repos.json"), "utf8"))).toEqual([repo]);
+    const wt = work("feat/d", 1);
+    // A repo that is gone is forgotten; one that isn't listed yet is found from its worktrees.
+    writeFileSync(join(stateHome, "repos.json"), JSON.stringify([join(dir, "gone")]));
+    expect(json(hwt(["mq", "daemon", "status"], { cwd: dir }))).toMatchObject({ running: false, repos: [{ gone: true }] });
+    const r = hwt(["mq", "daemon", "--once"], { cwd: dir });
+    expect(r.code).toBe(0);
+    expect(r.err).toContain("feat/d merging → verifying");
+    expect(item("feat/d")).toMatchObject({ state: "done" });
+    expect(item("feat/d").history.at(-1).by).toStartWith("daemon@");
+    expect(existsSync(wt)).toBe(false);
+    expect(originMain("feat-d").out).toBe("x\n");
+    expect(JSON.parse(readFileSync(join(stateHome, "repos.json"), "utf8"))).toEqual([repo]);
+    expect(existsSync(join(stateHome, "mq-daemon.json"))).toBe(false);
+    expect(ledger().mq.lease).toBeNull();
+  });
+
+  test("daemon: leaves a queue a live runner holds and items that wait for a person; one daemon only", () => {
+    work("feat/e", 1);
+    const l = ledger();
+    l.mq = { ...(l.mq ?? {}), lease: { holder: "t1", pid: process.pid, host: require("node:os").hostname(), since: "now", beat: Date.now() } };
+    writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
+    expect(hwt(["mq", "daemon", "--once"], { cwd: dir }).code).toBe(0);
+    expect(item("feat/e")).toMatchObject({ state: "queued" });
+    l.mq.lease = null;
+    writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
+    // Another daemon is up: this one exits without touching anything.
+    const f = join(dir, ".local", "state", "hwt", "mq-daemon.json");
+    writeFileSync(f, JSON.stringify({ pid: process.pid, host: require("node:os").hostname(), since: "now", beat: Date.now(), interval: 60 }));
+    const second = hwt(["mq", "daemon", "--once"], { cwd: dir });
+    expect(second.code).toBe(0);
+    expect(second.err).toContain("another merge-queue daemon is running");
+    expect(item("feat/e")).toMatchObject({ state: "queued" });
+    expect(json(hwt(["mq", "daemon", "status"]))).toMatchObject({ running: true, pid: process.pid });
+    expect(json(hwt(["status"], t1)).mq_daemon).toBe("running");
+    rmSync(f);
+    expect(json(hwt(["status"], t1)).mq_daemon).toBe("off");
+    // An item that needs a person's approval waits; approved, the daemon merges it.
+    sh(["mkdir", "-p", "db"]);
+    const wt = json(hwt(["new", "feat/db", "--no-space"], t1)).path;
+    mkdirSync(join(wt, "db"), { recursive: true });
+    writeFileSync(join(wt, "db", "m.sql"), "x\n");
+    sh(["git", "add", "."], wt);
+    sh(["git", "commit", "-qm", "db"], wt);
+    sh(["git", "push", "-q", "-u", "origin", "feat/db"], wt);
+    pr(2, "feat/db");
+    hwt(["mq", "add", "--pr", "2"], { cwd: wt });
+    hwt(["mq", "daemon", "--once"], { cwd: dir });
+    expect(item("feat/e")).toMatchObject({ state: "done" });
+    expect(item("feat/db")).toMatchObject({ state: "waiting_user" });
+    hwt(["mq", "daemon", "--once"], { cwd: dir });
+    expect(item("feat/db")).toMatchObject({ state: "waiting_user" });
+    hwt(["mq", "approve", item("feat/db").id], t1);
+    hwt(["mq", "daemon", "--once"], { cwd: dir });
+    // Behind the base after feat/e: updated first, merged on a later round.
+    expect(item("feat/db")).toMatchObject({ state: "updating" });
+    checks(2, "pass");
+    hwt(["mq", "daemon", "--once"], { cwd: dir });
+    expect(item("feat/db")).toMatchObject({ state: "done" });
+  });
+
+  test.if(process.platform === "darwin")("daemon install: a launchd agent that runs this hwt; uninstall removes it", () => {
+    const r = json(hwt(["mq", "daemon", "install", "--interval", "45"], { cwd: dir }));
+    const plist = readFileSync(r.plist, "utf8");
+    expect(r.plist).toBe(join(dir, "Library", "LaunchAgents", "dev.hwt.mq-daemon.plist"));
+    expect(plist).toContain("<string>mq</string>\n    <string>daemon</string>\n    <string>--interval</string>\n    <string>45</string>");
+    expect(plist).toMatch(/<array>\n    <string>\/[^<]+<\/string>/); // an absolute program path
+    expect(readFileSync(join(dir, "launchctl.calls"), "utf8")).toContain("bootstrap gui/");
+    expect(json(hwt(["mq", "daemon", "status"], { cwd: dir })).service).toBe(true);
+    expect(json(hwt(["mq", "daemon", "uninstall"], { cwd: dir }))).toMatchObject({ removed: true });
+    expect(existsSync(r.plist)).toBe(false);
+  });
+
   test("merges, verifies and cleans up; the main checkout follows the base; the task is done", () => {
     config({ mainSession: true, mergeQueue: { verify: "test -n \"$HWT_MQ_SHA\"", gc: "touch gc-ran" } });
     sh(["git", "push", "-q", "origin", "main"]);

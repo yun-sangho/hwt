@@ -9,6 +9,7 @@ import {
 } from "../session.ts";
 import type { InboxMessage, Ledger } from "../ledger.ts";
 import { parse } from "../args.ts";
+import { liveDaemon } from "../daemon.ts";
 import { basename, die, has, inboxId, printJson, run, sleepMs, stamp } from "../util.ts";
 
 /**
@@ -247,6 +248,8 @@ export function cmdStatus(args: string[]): void {
       merges: (l.merges ?? [])
         .filter((m) => !["done", "failed"].includes(m.state))
         .map((m) => ({ ...m, owner: ownerOf(l, m.branch), mine: mine(ownerOf(l, m.branch)) })),
+      // Who drains the queue: the daemon (hwt mq daemon) if one runs on this computer, else a main's hwt mq run.
+      mq_daemon: liveDaemon() ? "running" : "off",
       inbox_unacked: unacked,
       // The latest log entries, one line each (hwt inbox --log has them all).
       log_recent: myMessages(main, logInbox(main), l).slice(-5).map((m) => `${m.at.slice(11, 16)} ${m.text.split("\n")[0]!.slice(0, 140)}`),
