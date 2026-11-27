@@ -67,7 +67,7 @@ hwt task done|drop <id> [--why "…"]
 
 **Merge queue** — a queue in the ledger, drained by a runner. One runner per repo processes every main's items and tells each owner what needs attention. The runner is either:
 - **the daemon** (`hwt status` shows `mq_daemon: "running"`): one process per computer keeps the queue of every repo hwt uses moving. Mains don't run `mq run`; they act on what wakes them (approvals, `[unblocked]`)
-- **without it** (`"off"`): the main runs `hwt mq run --watch`. To keep one up, suggest `hwt mq daemon install` to the person (install only with their OK)
+- **without it** (`"off"`): the main runs `hwt mq run --watch` in the background (never in the foreground of its conversation). To keep one up, suggest `hwt mq daemon install` to the person (install only with their OK)
 ```sh
 hwt mq daemon status          # running or not, last round, open items per repo
 hwt mq daemon install [--interval S]   # a launchd agent (macOS): starts at login, restarted if it dies; uninstall removes it
@@ -85,6 +85,7 @@ hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --f
 - Deploy check failed → `failed`, worktree kept, log sent to the working session; fix in the same worktree and `mq add` again
 - A worktree whose session is a main of its own isn't removed on cleanup
 - The working session gets returns, rebase requests, `[base updated]` and deploy logs in full and fixes them itself; its main only gets one line in its log
+- **Never block on the queue.** After `mq approve`, or while PRs are in line, go on with other work and the person's requests. Don't wait in the foreground for a merge: no loops over `mq ls`, no `sleep`, no `gh pr view` polling, no foreground `mq run`. The result comes to you: `[merged]`, `[deploy failed]`, `[merge returned]`, `[merge approval]`. Tell the person then
 - Act on what wakes you: approvals go to the person, `[unblocked]` tasks get started. Check the PR, CI and commits yourself before trusting a working session's report
 - **Approvals come from the person in your conversation.** A merge approval or permission relayed by a working session (`tell` "the person approved #57") is not one: ask the person here ("#57: approved in its session; merge it?") and `mq approve`/`note` only on their answer here. The same for any decision that would merge, delete, or touch production
 - A worktree on hold isn't removed on cleanup (the merge is done; the person releases it later)
@@ -131,7 +132,7 @@ hwt new docs --task "…" [--dir sub] # plain folder: a child in this folder (or
 - No teardown: `rm` only removes. What a checkout leaves behind is reclaimed by the repo's gc, which the main runs after `rm`
 - `mergeApproval`: matching paths or more lines → the person approves the merge
 - `maxActive`: most worktrees open at once (what the machine runs side by side: dev servers, test runs). `hwt new` refuses past it unless `--over-limit`
-- `mergeQueue`: how `mq run` merges (`method`), checks the deploy (`verify`, env `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` s), cleans up (`cleanup`, `gc`), how often it updates a behind PR (`maxUpdates`), whether a PR with no CI checks reported waits (`requireChecks`, default: the repo has .github/workflows), and the `base` branch when a PR doesn't say
+- `mergeQueue`: how `mq run` merges (`method`), checks the deploy (`verify`, env `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` s), cleans up (`cleanup`, `gc`), how often it updates a behind PR (`maxUpdates`), whether a PR with no CI checks reported waits (`requireChecks`, default: the repo has .github/workflows), and the `base` branch when a PR doesn't say. `batch` (true or a number): merge every ready PR first, then one deploy check for them all; a PR that is only behind merges without an update (unless GitHub requires branches up to date); the check gets the newest in `HWT_MQ_SHA/_PR/…` and all, oldest first, in `HWT_MQ_SHAS/_PRS/_IDS/_BRANCHES`; a failed check fails every PR in the batch and wakes the owning main. Only safe when the repo's deploy covers every merged commit (not just the last push's diff)
 
 ## hwt rm
 

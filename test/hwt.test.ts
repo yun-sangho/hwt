@@ -708,6 +708,8 @@ describe("merge queue runner", () => {
     expect(r.code).toBe(0);
     expect(r.err).toContain("feat/d merging → verifying");
     expect(item("feat/d")).toMatchObject({ state: "done" });
+    // The owning main hears it (awake), so it never waits or polls for a merge.
+    expect(fake().sent.filter((x) => x.to === "t1" && x.text.startsWith("[merged]") && x.text.includes("feat/d PR #1"))).toHaveLength(1);
     expect(item("feat/d").history.at(-1).by).toStartWith("daemon@");
     expect(existsSync(wt)).toBe(false);
     expect(originMain("feat-d").out).toBe("x\n");
@@ -751,7 +753,10 @@ describe("merge queue runner", () => {
     expect(item("feat/db")).toMatchObject({ state: "waiting_user" });
     hwt(["mq", "daemon", "--once"], { cwd: dir });
     expect(item("feat/db")).toMatchObject({ state: "waiting_user" });
-    hwt(["mq", "approve", item("feat/db").id], t1);
+    const ok = json(hwt(["mq", "approve", item("feat/db").id], t1));
+    expect(ok).toMatchObject({ branch: "feat/db", state: "queued", });
+    expect(ok.runner).toStartWith("none");
+    expect(ok.next).toContain("don't wait");
     hwt(["mq", "daemon", "--once"], { cwd: dir });
     // Behind the base after feat/e: updated first, merged on a later round.
     expect(item("feat/db")).toMatchObject({ state: "updating" });
@@ -794,6 +799,58 @@ describe("merge queue runner", () => {
     expect(json(hwt(["task", "ls", "--all"], t1))[0].state).toBe("done");
     expect(json(hwt(["mq", "log", item("feat/a").id])).history.map((h: { to: string }) => h.to)).toEqual(["queued", "merging", "verifying", "cleaning", "done"]);
     expect(ledger().mq.lease).toBeNull();
+    // A main that ran the runner itself isn't told again; a daemon run tells the owner (see the daemon tests).
+    expect(fake().sent.filter((x) => x.text.startsWith("[merged]"))).toHaveLength(0);
+  });
+
+  test("batch: ready PRs merge together, one deploy check for them all, then cleanup", () => {
+    writeFileSync(join(repo, ".gitignore"), "verify.log\n");
+    config({ mainSession: true, mergeQueue: { batch: 2, verify: 'echo "$HWT_MQ_SHA|$HWT_MQ_SHAS|$HWT_MQ_BRANCHES|$HWT_MQ_PRS" >> verify.log' } });
+    sh(["git", "push", "-q", "origin", "main"]);
+    setFake((s) => void (s.behindAllowed = true));
+    const wa = work("feat/a", 1);
+    const wb = work("feat/b", 2);
+    work("feat/c", 3);
+    const r = run();
+    expect(r.merged).toEqual(["feat/a", "feat/b", "feat/c"]);
+    // b was behind once a merged: merged as it was, no update.
+    expect(item("feat/b")).toMatchObject({ state: "done", updates: 0 });
+    const log = readFileSync(join(repo, "verify.log"), "utf8").trim().split("\n").map((x) => x.split("|"));
+    // Two checks: a+b (batch of 2), then c.
+    expect(log).toHaveLength(2);
+    expect(log[0]!.slice(2)).toEqual(["feat/a feat/b", "1 2"]);
+    expect(log[0]![1]).toBe(`${item("feat/a").sha} ${item("feat/b").sha}`);
+    expect(log[0]![0]).toBe(item("feat/b").sha);
+    expect(log[1]!.slice(2)).toEqual(["feat/c", "3"]);
+    expect(existsSync(wa) || existsSync(wb)).toBe(false);
+    expect(item("feat/a").history.map((h: { to: string }) => h.to)).toEqual(["queued", "merging", "verifying", "cleaning", "done"]);
+  });
+
+  test("batch: a failed check fails every PR in it and wakes the owning main once", () => {
+    config({ mainSession: true, mergeQueue: { batch: true, verify: "echo broken; exit 1" } });
+    sh(["git", "push", "-q", "origin", "main"]);
+    setFake((s) => void (s.behindAllowed = true));
+    const wa = work("feat/a", 1);
+    const wb = work("feat/b", 2);
+    const r = run();
+    expect(r.merged).toEqual(["feat/a", "feat/b"]);
+    for (const b of ["feat/a", "feat/b"]) {
+      expect(item(b)).toMatchObject({ state: "failed" });
+      expect(item(b).why).toContain("for 2 merged together: feat/a, feat/b");
+    }
+    expect(existsSync(wa) && existsSync(wb)).toBe(true);
+    const inbox = readFileSync(join(repo, ".git", "hwt", "inbox.jsonl"), "utf8").trim().split("\n").map((x) => JSON.parse(x));
+    expect(inbox.filter((x: { text: string }) => x.text.includes("merged together"))).toHaveLength(1);
+  });
+
+  test("batch: a PR GitHub requires up to date is still updated first", () => {
+    config({ mainSession: true, mergeQueue: { batch: true, verify: "true" } });
+    sh(["git", "push", "-q", "origin", "main"]);
+    work("feat/a", 1);
+    work("feat/b", 2);
+    const r = run();
+    expect(r.merged).toEqual(["feat/a"]);
+    expect(item("feat/b")).toMatchObject({ state: "updating", updates: 1 });
   });
 
   test("cleanup leaves a worktree on hold and says so", () => {

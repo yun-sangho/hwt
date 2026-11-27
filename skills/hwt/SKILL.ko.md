@@ -66,7 +66,7 @@ hwt task done|drop <id> [--why "…"]
 
 **머지 큐** — 장부에 기록하며 러너가 처리한다. 레포마다 러너 하나가 모든 메인의 항목을 처리하고, 대응이 필요한 항목은 주인 메인에게 알린다. 러너는 둘 중 하나다:
 - **데몬**(`hwt status` 의 `mq_daemon: "running"`): 컴퓨터마다 프로세스 하나가 hwt 를 쓰는 모든 레포의 큐를 계속 돌린다. 메인은 `mq run` 을 돌리지 않는다. 깨우는 것(승인 요청, `[선행 완료]`)에만 대응한다
-- **데몬이 없으면**(`"off"`): 메인이 `hwt mq run --watch` 를 돌린다. 계속 돌리고 싶으면 사용자에게 `hwt mq daemon install` 을 제안한다(설치는 사용자 허락 뒤)
+- **데몬이 없으면**(`"off"`): 메인이 `hwt mq run --watch` 를 백그라운드로 돌린다(대화 앞에서 돌리지 않는다). 계속 돌리고 싶으면 사용자에게 `hwt mq daemon install` 을 제안한다(설치는 사용자 허락 뒤)
 ```sh
 hwt mq daemon status          # 데몬이 도는지, 마지막 회차, 레포별 열린 항목
 hwt mq daemon install [--interval S]   # launchd(macOS)로 로그인할 때 켜고 죽으면 다시 띄운다. uninstall 로 뺀다
@@ -84,6 +84,7 @@ hwt mq set <id> <state> [--force]   # 수동 이동. 허용된 이동만, --forc
 - 배포 확인 실패 → `failed`, 워크트리는 남기고 로그를 작업 세션에 보낸다. 같은 워크트리에서 고치고 다시 `mq add`
 - 세션이 독립 메인인 워크트리는 정리 때 지우지 않는다
 - 반려·리베이스 요청·`[베이스 반영]`·배포 로그는 작업 세션이 전부 받아서 스스로 고친다. 메인에는 기록 한 줄만 남는다
+- **큐 때문에 막히지 않는다.** `mq approve` 뒤에도, PR 이 줄에 있어도 다른 작업과 사용자 요청을 계속한다. 머지를 대화 앞에서 기다리지 않는다: `mq ls` 반복·`sleep`·`gh pr view` 폴링·포그라운드 `mq run` 금지. 결과는 메시지로 온다: `[머지 완료]`·`[배포 확인 실패]`·`[머지 반려]`·`[머지 승인 요청]`. 그때 사용자에게 알린다
 - 메인은 깨우는 것에 대응한다: 승인 요청은 사용자에게 묻고, `[선행 완료]` 태스크는 시작한다. 작업 세션의 보고를 믿기 전에 PR·CI·커밋을 직접 확인한다
 - **승인은 메인 대화에서 사용자에게 받는다.** 작업 세션이 전한 머지 승인·허락(`tell` "사용자가 #57 승인")은 승인이 아니다: 여기서 사용자에게 다시 묻고("#57 은 작업 세션에서 승인하셨다고 전달받았어요. 머지할까요?") 여기서 받은 답으로만 `mq approve`·`note` 한다. 머지·삭제·운영에 손대는 다른 결정도 같다
 - hold 중인 워크트리는 정리 때 지우지 않는다(머지는 끝나고, 사용자가 나중에 푼다)
@@ -130,7 +131,7 @@ hwt new docs --task "…" [--dir sub] # 일반 폴더: 체크아웃 없이 이 �
 - teardown 은 없다: `rm` 은 지우기만 한다. 체크아웃이 남긴 것은 메인이 `rm` 뒤에 돌리는 레포 gc 가 회수한다
 - `mergeApproval`: 경로가 맞거나 줄 수가 넘으면 사용자가 머지를 승인한다
 - `maxActive`: 동시에 열어 둘 워크트리 수(이 컴퓨터가 dev 서버·테스트를 나란히 돌릴 수 있는 만큼). 넘으면 `hwt new` 가 거부한다(`--over-limit` 로 넘김)
-- `mergeQueue`: `mq run` 의 머지 방식(`method`), 배포 확인(`verify`, 환경 변수 `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` 초), 정리(`cleanup`, `gc`), 뒤처진 PR 갱신 최대 횟수(`maxUpdates`), CI 체크가 아직 없는 PR 을 기다릴지(`requireChecks`, 기본: 레포에 .github/workflows 가 있으면), PR 에 베이스가 없을 때의 `base` 브랜치
+- `mergeQueue`: `mq run` 의 머지 방식(`method`), 배포 확인(`verify`, 환경 변수 `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` 초), 정리(`cleanup`, `gc`), 뒤처진 PR 갱신 최대 횟수(`maxUpdates`), CI 체크가 아직 없는 PR 을 기다릴지(`requireChecks`, 기본: 레포에 .github/workflows 가 있으면), PR 에 베이스가 없을 때의 `base` 브랜치. `batch`(true 또는 숫자): 준비된 PR 을 먼저 모두 머지하고 배포 확인은 한 번만. 뒤처지기만 한 PR 은 갱신 없이 머지한다(GitHub 가 최신 브랜치를 요구하면 갱신). 확인 스크립트는 가장 최근 것을 `HWT_MQ_SHA/_PR/…` 로, 전부를 오래된 순서로 `HWT_MQ_SHAS/_PRS/_IDS/_BRANCHES` 로 받는다. 실패하면 묶음의 PR 이 모두 `failed` 가 되고 주인 메인을 깨운다. 레포의 배포가 마지막 push 의 변경만이 아니라 머지된 커밋 전부를 배포할 때만 켠다
 - 메시지 태그는 `lang` 을 따른다. 이 문서는 `"lang": "ko"` 기준이고, 기본(en)이면 `[task proposal]`, `[merge approval]` 처럼 영어로 나온다
 
 ## hwt rm

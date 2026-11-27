@@ -23,6 +23,8 @@ export interface FakeState {
   prs?: Record<string, FakePr>;
   nativeQueues?: Record<string, number>;
   sendFailures?: number;
+  /** Branch protection doesn't require PRs up to date: a behind PR reports CLEAN, not BEHIND. */
+  behindAllowed?: boolean;
 }
 
 export interface FakePr {

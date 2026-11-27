@@ -79,7 +79,7 @@ else if (args[0] === "api" && args[1] === "graphql") {
       state: pr.state,
       mergeCommit: pr.sha ? { oid: pr.sha } : null,
       mergeable: conflict ? "CONFLICTING" : "MERGEABLE",
-      mergeStateStatus: conflict ? "DIRTY" : behind ? "BEHIND" : pr.checks === "pending" ? "BLOCKED" : "CLEAN",
+      mergeStateStatus: conflict ? "DIRTY" : behind && !s.behindAllowed ? "BEHIND" : pr.checks === "pending" ? "BLOCKED" : "CLEAN",
       baseRefName: pr.base,
       statusCheckRollup: pr.checks === "none" ? [] : [{ name: "ci", conclusion: pr.checks === "pass" ? "SUCCESS" : pr.checks === "fail" ? "FAILURE" : "", state: pr.checks === "pending" ? "PENDING" : "" }],
     });

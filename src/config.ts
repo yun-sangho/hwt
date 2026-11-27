@@ -35,6 +35,13 @@ export interface MergeQueueConfig {
    * .github/workflows (right after a push, GitHub shows no checks until CI starts).
    */
   requireChecks?: boolean;
+  /**
+   * Merge every ready PR first, then run one deploy check for them all (true, or the most to merge at once).
+   * A PR that is only behind its base (no conflict, and GitHub doesn't require it up to date) merges without an
+   * update. The check gets the newest merge in HWT_MQ_SHA/_PR/_ID/_BRANCH and all of them, oldest first, in
+   * HWT_MQ_SHAS/_PRS/_IDS/_BRANCHES. Failed: every PR in the batch is failed. Default false (one at a time).
+   */
+  batch?: boolean | number;
 }
 
 /** .hwt.json at the repo root. */
