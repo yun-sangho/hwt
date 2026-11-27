@@ -130,7 +130,7 @@ hwt new docs --task "…" [--dir sub] # 일반 폴더: 체크아웃 없이 이 �
 - teardown 은 없다: `rm` 은 지우기만 한다. 체크아웃이 남긴 것은 메인이 `rm` 뒤에 돌리는 레포 gc 가 회수한다
 - `mergeApproval`: 경로가 맞거나 줄 수가 넘으면 사용자가 머지를 승인한다
 - `maxActive`: 동시에 열어 둘 워크트리 수(이 컴퓨터가 dev 서버·테스트를 나란히 돌릴 수 있는 만큼). 넘으면 `hwt new` 가 거부한다(`--over-limit` 로 넘김)
-- `mergeQueue`: `mq run` 의 머지 방식(`method`), 배포 확인(`verify`, 환경 변수 `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` 초), 정리(`cleanup`, `gc`), 뒤처진 PR 갱신 최대 횟수(`maxUpdates`), CI 체크가 아직 없는 PR 을 기다릴지(`requireChecks`, 기본: 레포에 .github/workflows 가 있으면), PR 에 베이스가 없을 때의 `base` 브랜치
+- `mergeQueue`: `mq run` 의 머지 방식(`method`), 배포 확인(`verify`, 환경 변수 `HWT_MQ_ID/_BRANCH/_PR/_SHA`, `verifyTimeout` 초), 정리(`cleanup`, `gc`), 뒤처진 PR 갱신 최대 횟수(`maxUpdates`), CI 체크가 아직 없는 PR 을 기다릴지(`requireChecks`, 기본: 레포에 .github/workflows 가 있으면), PR 에 베이스가 없을 때의 `base` 브랜치. `batch`(true 또는 숫자): 준비된 PR 을 먼저 모두 머지하고 배포 확인은 한 번만. 뒤처지기만 한 PR 은 갱신 없이 머지한다(GitHub 가 최신 브랜치를 요구하면 갱신). 확인 스크립트는 가장 최근 것을 `HWT_MQ_SHA/_PR/…` 로, 전부를 오래된 순서로 `HWT_MQ_SHAS/_PRS/_IDS/_BRANCHES` 로 받는다. 실패하면 묶음의 PR 이 모두 `failed` 가 되고 주인 메인을 깨운다. 레포의 배포가 마지막 push 의 변경만이 아니라 머지된 커밋 전부를 배포할 때만 켠다
 - 메시지 태그는 `lang` 을 따른다. 이 문서는 `"lang": "ko"` 기준이고, 기본(en)이면 `[task proposal]`, `[merge approval]` 처럼 영어로 나온다
 
 ## hwt rm

@@ -5,6 +5,7 @@
 //   states    only the moves in MOVES are allowed; every move is kept in the item's history.
 //   plan      a pure function from an item and its checks to the next step (merge, update, wait, return, ask).
 //   runner    `hwt mq run`: one runner per repo at a time (a lease in the ledger).
+//   batch     mergeQueue.batch: merge every ready PR in a pass, then one deploy check for them all.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { hostname } from "node:os";
@@ -278,7 +279,9 @@ type QueueStep =
 export type Step = QueueStep | { act: "enqueue" };
 
 /** The next step for an item in line. Pure: the runner does what it says. */
-export function plan(m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: string[]; requireChecks?: boolean }): QueueStep {
+export function plan(
+  m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: string[]; requireChecks?: boolean; batch?: boolean | number },
+): QueueStep {
   if (o.blockedBy.length) return { act: "blocked", why: `after ${o.blockedBy.join(", ")}` };
   if (m.pr == null) return { act: "return", why: "no PR: open one, then hwt mq add --pr <n>" };
   if (!c.pr) return { act: "wait", why: "can't read the PR (gh)" };
@@ -292,7 +295,8 @@ export function plan(m: Merge, c: Checks, o: { maxUpdates: number; blockedBy: st
   }
   if (c.approval === "user" && !m.approved) return { act: "ask", why: c.approval_why.join("; ") };
   if (c.pr.ci === "fail") return { act: "return", why: `CI failed: ${c.pr.failing.join(", ")}` };
-  if (c.behind > 0 || c.pr.mergeStateStatus === "BEHIND") {
+  // Batching merges a PR that is only behind (GitHub says BEHIND when it requires branches up to date).
+  if (c.pr.mergeStateStatus === "BEHIND" || (c.behind > 0 && !o.batch)) {
     if ((m.updates ?? 0) >= o.maxUpdates) {
       return { act: "return", why: `still behind ${c.base} after ${m.updates} update(s): rebase and push`, rebase: true };
     }
@@ -512,6 +516,9 @@ function tail(s: string, n = 20): string {
 export function runQueue(main: string, o: RunOptions): RunReport {
   const cfg = queueConfig(main);
   const m = messages(langFor(main));
+  // Batching only changes anything with a deploy check: without one, each merge is cleaned up as it lands.
+  const batchMax = cfg.batch === true ? Infinity : typeof cfg.batch === "number" && cfg.batch > 1 ? cfg.batch : 0;
+  const batching = batchMax > 0 && !!cfg.verify;
   const report: RunReport = { events: [], merged: [], waiting: [], unblocked_tasks: [] };
   if (o.dryRun) report.dry_run = true;
 
@@ -543,7 +550,28 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     if (hasOrigin(main)) run(["git", "fetch", "-q", "--prune", "origin"], { cwd: main });
   };
 
-  const finish = (x: Merge, sha: string, why: string | null): void => {
+  /** The deploy check for these merges (oldest first): null when it passed, else why and the log's tail. */
+  const verify = (xs: Merge[]): { why: string; log: string } | null => {
+    const last = xs.at(-1)!;
+    const all = (f: (y: Merge) => string) => xs.map(f).join(" ");
+    const r = Bun.spawnSync({
+      cmd: ["sh", "-c", cfg.verify!],
+      cwd: main,
+      env: {
+        ...process.env, HWT_MQ_ID: last.id, HWT_MQ_BRANCH: last.branch, HWT_MQ_PR: String(last.pr ?? ""), HWT_MQ_SHA: last.sha ?? "",
+        HWT_MQ_IDS: all((y) => y.id), HWT_MQ_BRANCHES: all((y) => y.branch), HWT_MQ_PRS: all((y) => String(y.pr ?? "")),
+        HWT_MQ_SHAS: all((y) => y.sha ?? ""),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: cfg.verifyTimeout * 1000,
+    });
+    if (r.exitCode === 0) return null;
+    return { why: `deploy check failed (exit ${r.exitCode ?? "timeout"})`, log: tail(`${r.stdout.toString()}\n${r.stderr.toString()}`) };
+  };
+
+  /** Merged: record it, then (unless batching, which checks later) the deploy check and cleanup. */
+  const finish = (x: Merge, sha: string, why: string | null): "done" | "deferred" => {
     const { id } = x;
     const verified = x.state === "cleaning" && x.sha === sha;
     if (!verified && (x.state !== "verifying" || x.sha !== sha)) {
@@ -551,22 +579,50 @@ export function runQueue(main: string, o: RunOptions): RunReport {
       if (x.state !== "verifying" && x.state !== "cleaning") report.merged.push(x.branch);
     }
     if (!verified && cfg.verify) {
-      const r = Bun.spawnSync({
-        cmd: ["sh", "-c", cfg.verify],
-        cwd: main,
-        env: { ...process.env, HWT_MQ_ID: id, HWT_MQ_BRANCH: x.branch, HWT_MQ_PR: String(x.pr ?? ""), HWT_MQ_SHA: sha },
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: cfg.verifyTimeout * 1000,
-      });
-      if (r.exitCode !== 0) {
-        const log = tail(`${r.stdout.toString()}\n${r.stderr.toString()}`);
-        const why = `deploy check failed (exit ${r.exitCode ?? "timeout"})`;
-        moveItem(id, "failed", why);
-        giveBack(x, `${m.tags.deployFailed} ${id} ${x.branch}: ${why}\n${log}`);
-        return;
+      if (batching) return "deferred";
+      const failed = verify([{ ...x, sha }]);
+      if (failed) {
+        moveItem(id, "failed", failed.why);
+        giveBack(x, `${m.tags.deployFailed} ${id} ${x.branch}: ${failed.why}\n${failed.log}`);
+        return "done";
       }
     }
+    cleanUp(x);
+    return "done";
+  };
+
+  /** One deploy check for every merged item waiting for one, then cleanup. False when there were none. */
+  const verifyBatch = (): boolean => {
+    fetch();
+    const xs = ordered(readLedger(main)).filter((y) => y.state === "verifying" && y.sha);
+    if (!xs.length) return false;
+    // Oldest merge first: an earlier merge is an ancestor of a later one.
+    const before = (a: Merge, b: Merge) => run(["git", "merge-base", "--is-ancestor", a.sha!, b.sha!], { cwd: main }).ok;
+    xs.sort((a, b) => (a.sha === b.sha ? 0 : before(a, b) ? -1 : before(b, a) ? 1 : 0));
+    const failed = verify(xs);
+    if (!failed) {
+      for (const x of xs) cleanUp(x);
+      return true;
+    }
+    const why = xs.length > 1 ? `${failed.why} for ${xs.length} merged together: ${xs.map((y) => y.branch).join(", ")}` : failed.why;
+    const owners = new Set<string>();
+    for (const x of xs) {
+      moveItem(x.id, "failed", why);
+      giveBack(x, `${m.tags.deployFailed} ${x.id} ${x.branch}: ${why}\n${failed.log}`, false);
+      const owner = ownerOf(readLedger(main), x.branch);
+      if (owner) owners.add(owner);
+    }
+    // The person decides which one broke it: every owning main hears it (once), awake.
+    for (const owner of owners) {
+      notifyMain(main, owner, { branch: xs.at(-1)!.branch, path: main, text: `${m.tags.deployFailed} ${why}`, wake: true });
+    }
+    return true;
+  };
+
+  /** After a passed (or no) deploy check: remove the worktree, gc, fast-forward, close the task. */
+  const cleanUp = (x: Merge): void => {
+    const { id } = x;
+    const verified = x.state === "cleaning";
     if (!cfg.cleanup) {
       moveItem(id, "done", null);
       return;
@@ -619,7 +675,10 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     const status = mergeStatus(main, x.pr);
     switch (status.kind) {
       case "merged":
-        finish(x, status.sha, null);
+        if (finish(x, status.sha, null) === "deferred") {
+          fetch(); // the next item's checks see this merge on the base
+          return "next";
+        }
         return "restart";
       case "queued":
       case "pending":
@@ -650,7 +709,10 @@ export function runQueue(main: string, o: RunOptions): RunReport {
       case "merged_elsewhere": {
         const status = mergeStatus(main, x.pr);
         if (status.kind !== "merged") return { kind: "serial", why: "can't confirm PR merge status (gh)" };
-        finish(x, status.sha, "merged outside the queue");
+        if (finish(x, status.sha, "merged outside the queue") === "deferred") {
+          fetch();
+          return "next";
+        }
         return "restart";
       }
       case "update": {
@@ -701,14 +763,19 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     }
     if (finalized) return "restart";
     l = readLedger(main);
+    let merges = 0;
     for (const x of ordered(l).filter((y) => y.state === "queued" || y.state === "updating" || y.state === "waiting_user")) {
       if (x.state === "waiting_user" && !x.approved) continue;
-      const c = mqChecks(main, x, l);
-      const s = schedule(main, x, c, l, cfg, pending);
+      const c = mqChecks(main, x, readLedger(main));
+      let s = schedule(main, x, c, readLedger(main), cfg, pending);
+      if (batching && s.act === "merge" && merges >= batchMax) s = { act: "wait", why: `batch is full (${batchMax})` };
+      if (s.act === "merge") merges++;
       const progress = step(x, s);
       if (progress === "restart") return progress;
       if (progress !== "next") pending.set(x.id, progress);
     }
+    // Batching: everything merged in this pass (and any left verifying) gets one deploy check now.
+    if (batching && verifyBatch()) return "restart";
     return pending;
   };
 
