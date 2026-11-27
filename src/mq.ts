@@ -14,6 +14,7 @@ import { currentBranch, git, gitOut, isDirty } from "./git.ts";
 import * as herdr from "./herdr.ts";
 import { readLedger, updateLedger, type Ledger, type Merge, type MergeState, type MqLease } from "./ledger.ts";
 import { messages } from "./messages.ts";
+import { checkDeploy } from "./deploy.ts";
 import { notifyMain, ownerOf } from "./session.ts";
 import { die, has, run, sleepMs, stamp, warn, type RunResult } from "./util.ts";
 
@@ -441,7 +442,7 @@ function schedule(
   if (next.act === "update" || next.act === "merged_elsewhere") return wait;
   if (next.act !== "merge") return next;
   const waits = [...pending.values()];
-  if (cfg.verify || cfg.gc || waits.some((entry) => entry.kind === "serial")) return wait;
+  if (cfg.verify || cfg.deploy || cfg.gc || waits.some((entry) => entry.kind === "serial")) return wait;
   const admission = nativeAdmission(main, c);
   if (!admission) return wait;
   const used = waits.filter((entry) => entry.kind === "native" && entry.queue === admission.queue).length;
@@ -518,7 +519,8 @@ export function runQueue(main: string, o: RunOptions): RunReport {
   const m = messages(langFor(main));
   // Batching only changes anything with a deploy check: without one, each merge is cleaned up as it lands.
   const batchMax = cfg.batch === true ? Infinity : typeof cfg.batch === "number" && cfg.batch > 1 ? cfg.batch : 0;
-  const batching = batchMax > 0 && !!cfg.verify;
+  const checked = !!(cfg.verify || cfg.deploy);
+  const batching = batchMax > 0 && checked;
   const report: RunReport = { events: [], merged: [], waiting: [], unblocked_tasks: [] };
   if (o.dryRun) report.dry_run = true;
 
@@ -553,6 +555,10 @@ export function runQueue(main: string, o: RunOptions): RunReport {
   /** The deploy check for these merges (oldest first): null when it passed, else why and the log's tail. */
   const verify = (xs: Merge[]): { why: string; log: string } | null => {
     const last = xs.at(-1)!;
+    if (cfg.deploy) {
+      const failed = checkDeploy(main, cfg.deploy, xs.map((y) => ({ sha: y.sha ?? "", branch: y.branch, pr: y.pr })), cfg.verifyTimeout);
+      if (failed || !cfg.verify) return failed;
+    }
     const all = (f: (y: Merge) => string) => xs.map(f).join(" ");
     const r = Bun.spawnSync({
       cmd: ["sh", "-c", cfg.verify!],
@@ -578,7 +584,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
       moveItem(id, "verifying", why, (y) => { y.sha = sha; });
       if (x.state !== "verifying" && x.state !== "cleaning") report.merged.push(x.branch);
     }
-    if (!verified && cfg.verify) {
+    if (!verified && checked) {
       if (batching) return "deferred";
       const failed = verify([{ ...x, sha }]);
       if (failed) {

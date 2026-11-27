@@ -1,5 +1,6 @@
 // Settings, in three layers: built-in defaults < user config (~/.config/hwt/config.json) < repo (.hwt.json).
 // Environment variables win over all of them (HWT_ROOT, HWT_AGENT, HWT_LANG).
+import type { DeployConfig } from "./deploy.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,11 @@ export interface MergeQueueConfig {
   base?: string;
   /** Deploy check run in the main checkout after the merge (sh -c). Exit 0 = passed. Env: HWT_MQ_ID, _BRANCH, _PR, _SHA. */
   verify?: string;
+  /**
+   * The built-in deploy check (deploy.ts): the push runs of these workflows on every merged commit must succeed,
+   * then the URLs must answer. Runs before verify when both are set.
+   */
+  deploy?: DeployConfig;
   /** Seconds the deploy check may take. Default 1800. */
   verifyTimeout?: number;
   /** The repo's gc, run in the main checkout after the worktree is removed (sh -c). */

@@ -25,6 +25,19 @@ export interface FakeState {
   sendFailures?: number;
   /** Branch protection doesn't require PRs up to date: a behind PR reports CLEAN, not BEHIND. */
   behindAllowed?: boolean;
+  /** Workflow runs for gh run list: by workflow and head commit. */
+  runs?: FakeRun[];
+}
+
+export interface FakeRun {
+  databaseId: number;
+  workflow: string;
+  sha: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "" | "success" | "failure" | "cancelled" | "skipped";
+  /** Polls left before it completes with `then` (status in_progress until then). */
+  completeAfter?: number;
+  then?: FakeRun["conclusion"];
 }
 
 export interface FakePr {
