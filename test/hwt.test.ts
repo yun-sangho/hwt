@@ -365,7 +365,9 @@ describe("main-session workflow", () => {
       sh(["git", "add", "."], w);
       sh(["git", "commit", "-qm", "f"], w);
     }
-    const m1 = json(hwt(["mq", "add"], { cwd: w1 })).merge;
+    const a1 = json(hwt(["mq", "add"], { cwd: w1 }));
+    expect(a1.next).toStartWith("end your turn");
+    const m1 = a1.merge;
     const m2 = json(hwt(["mq", "add"], { cwd: w2 })).merge;
     expect(json(hwt(["mq", "next"], as("t2"))).next.id).toBe(m2);
     expect(json(hwt(["mq", "next"], as("t1"))).next.id).toBe(m1);
@@ -503,16 +505,19 @@ describe("main-session workflow", () => {
       const r = hwt(cmd, { cwd: wt });
       expect(r.code).toBe(1);
       expect(r.err).toContain("hwt tell");
-      expect(r.err).toContain("gh pr view");
+      expect(r.err).toContain("턴을 끝낸다");
+      expect(r.err).not.toContain("gh pr view");
     }
     expect(hwt(["inbox"]).code).toBe(0);
   });
 
-  test("worker instructions say how to wait for the merge", () => {
+  test("worker instructions say to end the turn, not wait for the merge", () => {
     config({ mainSession: true });
     hwt(["new", "feat/i", "--task", "go"]);
     const task = (fake().calls[0]!.arg.argv as string[]).at(-1)!;
-    expect(task).toContain("gh pr view <n> --json state");
+    expect(task).toContain("end your turn");
+    expect(task).toContain("don't wait for CI");
+    expect(task).not.toContain("--json state");
     expect(task).toContain("[rebase request]");
   });
 

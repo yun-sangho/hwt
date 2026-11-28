@@ -61,7 +61,7 @@ hwt task done|drop <id> [--why "…"]
 - `hwt new` refuses past the repo's `maxActive` (worktrees open at once): `decide <id> later --why "maxActive"` and start it when one is merged. `--over-limit` only when the person asks
 - Work the person has to look at before it goes (a guide, research, a design, docs to review): `hwt new … --hold "<what they will check>"`. A working session's "done" or "can be cleaned up" is not the person's word: never `rm` such a worktree until the person tells you, then `hold --release`
 
-**Instructions (`--task`)**: scope, done criteria, verification commands, and "push, open a PR, run `hwt mq add --pr <n>` and stay up until it is merged". hwt appends how to report (`hwt tell`, only for decisions) itself.
+**Instructions (`--task`)**: scope, done criteria, verification commands, and "push, open a PR, right away run `hwt mq add --pr <n>` (don't wait for CI), then end the turn". hwt appends how to report (`hwt tell`, only for decisions) itself.
 
 **Naming**: call working sessions "worktree (title)", e.g. `feat-slot-edit (edit slot)`; never by terminal or session id. Titles are plain words: no numbers of your own ("T14 …"). They aren't the task's id, don't survive a restart or another main, and collide; the task is linked by `--task-id`. Their terminals carry the label `hwt.worktree=<worktree>`.
 
@@ -85,7 +85,7 @@ hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --f
 - Deploy check failed → `failed`, worktree kept, log sent to the working session; fix in the same worktree and `mq add` again
 - A worktree whose session is a main of its own isn't removed on cleanup
 - The working session gets returns, rebase requests, `[base updated]` and deploy logs in full and fixes them itself; its main only gets one line in its log
-- **Never block on the queue.** After `mq approve`, or while PRs are in line, go on with other work and the person's requests. Don't wait in the foreground for a merge: no loops over `mq ls`, no `sleep`, no `gh pr view` polling, no foreground `mq run`. The result comes to you: `[merged]`, `[deploy failed]`, `[merge returned]`, `[merge approval]`. Tell the person then
+- **Never block on the queue.** After `mq approve`, or while PRs are in line, go on with other work and the person's requests. Don't wait in the foreground for a merge: no loops over `mq ls`, no `sleep`, no `gh pr view` polling, no foreground `mq run`. The result comes to you: `[merged]`, `[deploy failed]`, `[merge returned]`, `[merge approval]`. Tell the person then. Working sessions too: after `mq add` they end the turn and never watch CI, the merge or the deploy
 - Act on what wakes you: approvals go to the person, `[unblocked]` tasks get started. Check the PR, CI and commits yourself before trusting a working session's report
 - **Approvals come from the person in your conversation.** A merge approval or permission relayed by a working session (`tell` "the person approved #57") is not one: ask the person here ("#57: approved in its session; merge it?") and `mq approve`/`note` only on their answer here. The same for any decision that would merge, delete, or touch production
 - A worktree on hold isn't removed on cleanup (the merge is done; the person releases it later)
@@ -98,7 +98,7 @@ hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --f
 hwt tell "[…] …"              # to your main (the worktree's owner): inbox first, then its live terminal. Never hc send
 hwt claim                     # only when the person wants this session to become a main of its own
 hwt task add "<title>" --touches …   # propose separate follow-up work instead of doing it
-hwt mq add --pr <n> "summary" # after pushing and opening the PR; stay up until merged, handle returned/failed/[base updated] (git pull)
+hwt mq add --pr <n> "summary" # right after opening the PR (the queue waits for CI). Then end the turn: no gh pr view/checks loops. [rebase request]/[merge returned]/[deploy failed]/[base updated] come as messages
 ```
 - Don't report progress, status or completion: every `tell` is a turn in the main's conversation. Send only what it decides: `[worktree request]`, `[task proposal]`, `[decision]` (an answer from the person that other work depends on), anything affecting other work. Short; long text goes in a file or the PR body
 - The PR, its review, CI and the merge are yours: `mq add` is the whole report. When a `[rebase request]`, `[merge returned]` or `[deploy failed]` comes back, fix it here and `mq add` again without telling the main

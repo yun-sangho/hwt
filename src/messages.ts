@@ -56,9 +56,10 @@ const en: Messages = {
     `[hwt] Don't report progress, status or completion to the main session: every tell is a turn in its conversation. ` +
     `Tell it only what it has to decide, with \`${self} tell "..."\` (never hc send): ` +
     `[worktree request], [task proposal] (\`${self} task add\`), and anything that affects other work. ` +
-    `To merge, push, open the PR and run \`${self} mq add --pr <n>\`: that is the whole report (the merge queue takes it from there). Questions that only matter inside this task go straight to the person ` +
+    `To merge, push, open the PR and right away run \`${self} mq add --pr <n>\` (don't wait for CI: the queue waits for it): that is the whole report. Questions that only matter inside this task go straight to the person ` +
     `on this screen, not through the main session. If their answer is a decision other work depends on, tell the main session with [decision]. ` +
-    `After mq add, wait for the merge with \`gh pr view <n> --json state\` (don't use ${self} wait, ack or inbox: they are the main session's). ` +
+    `After mq add, end your turn: don't wait for or poll CI, the merge or the deploy (no gh pr view/checks loops, no sleep; ${self} wait, ack and inbox are the main session's). ` +
+    `The merge queue does all of that and sends you a message only when you have something to do; when merged, it removes this worktree. ` +
     `If a [rebase request], [merge returned] or [deploy failed] comes back, fix it here and mq add again, without telling the main; ` +
     `on [base updated], git pull before committing more. ` +
     `If the person wants this session to become a main session of its own (to split its work further), run \`${self} claim\` here.`,
@@ -73,7 +74,7 @@ const en: Messages = {
   mainOnly: (main, cmd, now) =>
     `hwt ${cmd} runs only from a main session: in ${main}, or in a worktree whose session ran hwt claim (this repo's .hwt.json has mainSession).\n` +
     `A working session reports with: hwt tell "[worktree request|task proposal|merge request|decision] ..." ` +
-    `(merge: hwt mq add --pr <n>; wait for the merge with gh pr view <n>)${now ? `  (main session now: ${now})` : ""}`,
+    `(merge: hwt mq add --pr <n> right after opening the PR, then end your turn; the queue messages you if needed)${now ? `  (main session now: ${now})` : ""}`,
   sessionStartMain: (repo, claimed) =>
     `[hwt] This session is a main session of ${repo}${claimed ? " (claimed: the worktrees it makes report here with hwt tell)" : ""}. ` +
     `There can be other main sessions, each with its own working sessions: hwt status, task, inbox and mq next show this one's; ` +
@@ -85,7 +86,7 @@ const en: Messages = {
     `[hwt] This session is a working session of ${repo} (worktree ${wt}, branch ${branch}). Change only this worktree; ` +
     `don't create or remove worktrees and don't merge. Don't report progress or completion to the main session. Reach it only for ` +
     `what it decides, with ${self} tell "[…] …" (never hc send): [worktree request], [task proposal] (${self} task add), [decision]. ` +
-    `To merge: push, open the PR, ${self} mq add --pr <n> (that is the report), then stay up until it is merged and fix what comes back. Questions that only matter inside this task go straight to the person. ` +
+    `To merge: push, open the PR, ${self} mq add --pr <n> (that is the report), then end your turn without waiting or polling: what needs fixing comes to you as a message. Questions that only matter inside this task go straight to the person. ` +
     `If the person wants this session to become a main session of its own, run ${self} claim here.`,
 };
 
@@ -110,9 +111,10 @@ const ko: Messages = {
   workerInstructions: (self) =>
     `[hwt] 메인 세션에 진행 상황·완료를 보고하지 않는다(tell 하나하나가 메인 대화의 한 턴이 된다). ` +
     `메인이 판단할 것만 \`${self} tell "..."\` 로 보낸다(hc send 금지): [워크트리 요청]·[작업 제안](\`${self} task add\`)·다른 작업에 영향을 주는 일. ` +
-    `머지는 push 하고 PR 을 연 뒤 \`${self} mq add --pr <n>\` 만 하면 된다(그게 보고 전부이고, 이후는 머지 큐가 맡는다). 이 작업 안에서만 필요한 질문은 메인을 거치지 않고 이 화면에서 ` +
+    `머지는 push 하고 PR 을 열자마자 \`${self} mq add --pr <n>\` 만 하면 된다(CI 를 기다리지 않는다, 큐가 기다린다. 그게 보고 전부다). 이 작업 안에서만 필요한 질문은 메인을 거치지 않고 이 화면에서 ` +
     `사용자에게 직접 묻는다. 그 답이 다른 작업에도 걸리는 결정이면 [결정 공유] 로 메인에 알린다. ` +
-    `mq add 뒤에는 \`gh pr view <n> --json state\` 로 머지를 기다린다(메인 전용인 ${self} wait·ack·inbox 는 쓰지 않는다). ` +
+    `mq add 뒤에는 턴을 끝낸다. CI·머지·배포를 기다리거나 반복 확인하지 않는다(gh pr view/checks 반복, sleep 금지. ${self} wait·ack·inbox 는 메인 전용). ` +
+    `그건 머지 큐가 다 하고, 할 일이 생길 때만 이 세션에 메시지가 온다. 머지되면 이 워크트리는 큐가 정리한다. ` +
     `[리베이스 요청]·[머지 반려]·[배포 확인 실패] 가 오면 메인에 알리지 말고 여기서 고쳐 다시 mq add 한다. [베이스 반영] 이 오면 더 커밋하기 전에 git pull 한다. ` +
     `사용자가 이 세션을 독립된 메인 세션으로 만들자고 하면(작업을 더 나눠 맡기려고) 여기서 \`${self} claim\` 한다.`,
   taskProposal: (id, title, touches) =>
@@ -125,7 +127,7 @@ const ko: Messages = {
   mainOnly: (main, cmd, now) =>
     `hwt ${cmd} 는 메인 세션에서만 돈다: ${main}, 또는 세션이 hwt claim 한 워크트리(.hwt.json 의 mainSession).\n` +
     `작업 세션은 hwt tell "[워크트리 요청|작업 제안|머지 요청|결정 공유] ..." 로 보고한다 ` +
-    `(머지: hwt mq add --pr <n>, 머지 대기는 gh pr view <n>)${now ? `  (지금 메인 세션: ${now})` : ""}`,
+    `(머지: PR 을 열자마자 hwt mq add --pr <n> 하고 턴을 끝낸다. 할 일이 생기면 큐가 메시지를 보낸다)${now ? `  (지금 메인 세션: ${now})` : ""}`,
   sessionStartMain: (repo, claimed) =>
     `[hwt] 이 세션은 ${repo} 의 메인 세션 중 하나다${claimed ? " (hwt claim 완료, 이 세션이 만든 워크트리의 hwt tell 이 여기로 온다)" : ""}. ` +
     `메인 세션은 여럿일 수 있고 각자 자기 작업 세션을 둔다: hwt status·task·inbox·mq next 는 이 세션 것만 보여 준다. ` +
@@ -135,7 +137,7 @@ const ko: Messages = {
   sessionStartWorker: (repo, wt, branch, self) =>
     `[hwt] 이 세션은 ${repo} 의 작업 세션이다(워크트리 ${wt}, 브랜치 ${branch}). 자기 워크트리만 고치고, 워크트리를 만들거나 지우거나 ` +
     `머지하지 않는다. 메인에 진행 상황·완료를 보고하지 않고, 메인이 판단할 것만 ${self} tell "[…] …" 로 보낸다(hc send 금지): ` +
-    `[워크트리 요청]·[작업 제안](${self} task add)·[결정 공유]. 머지는 push·PR 뒤 ${self} mq add --pr <n> 이 보고 전부이고, 머지될 때까지 남아 돌아온 것을 고친다. 이 작업 안에서만 필요한 질문은 사용자에게 직접 묻는다. ` +
+    `[워크트리 요청]·[작업 제안](${self} task add)·[결정 공유]. 머지는 push·PR 뒤 ${self} mq add --pr <n> 이 보고 전부이고, 그 뒤에는 기다리거나 반복 확인하지 않고 턴을 끝낸다(고칠 것이 생기면 메시지가 온다). 이 작업 안에서만 필요한 질문은 사용자에게 직접 묻는다. ` +
     `사용자가 이 세션을 독립된 메인 세션으로 만들자고 하면 여기서 ${self} claim 한다.`,
 };
 
