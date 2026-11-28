@@ -19,7 +19,14 @@ export interface Messages {
     deployFailed: string;
     unblocked: string;
     merged: string;
+    postDeploy: string;
+    postDeployProblem: string;
+    checkOverdue: string;
   };
+  /** To the working session once its PR is deployed: what to check, and how to answer. */
+  postDeployCheck(id: string, verify: string[], post: string[]): string;
+  /** The criteria the main set at hwt new, appended to the task. */
+  verifyInTask(verify: string[]): string;
   /** After the runner merged the base into a PR branch: what the working session does. */
   baseUpdated: string;
   /** After a return: how to get back in line. */
@@ -49,7 +56,17 @@ const en: Messages = {
     deployFailed: "[deploy failed]",
     unblocked: "[unblocked]",
     merged: "[merged]",
+    postDeploy: "[post-deploy check]",
+    postDeployProblem: "[post-deploy problem]",
+    checkOverdue: "[check overdue]",
   },
+  postDeployCheck: (id, verify, post) =>
+    `deployed. Check production now, read-only and with test accounts only:\n` +
+    [...verify.map((v) => `- (main's criterion) ${v}`), ...post.map((v) => `- (implementation risk) ${v}`)].join("\n") +
+    `\nAll fine: hwt mq release ${id} --result "what you saw, per item" (the queue then cleans up this worktree). ` +
+    `Something wrong: hwt mq problem ${id} "what and how" (the worktree stays, the main hears it and decides with the person whether to revert; fixes go in a new PR from here)`,
+  verifyInTask: (verify) =>
+    `After the deploy, these must hold in production (you check them when the queue sends [post-deploy check]):\n${verify.map((v) => `- ${v}`).join("\n")}`,
   baseUpdated: "the merge queue merged the base into your PR branch; git pull before you commit more. CI runs again, nothing else to do",
   requeue: "Fix it, push, then hwt mq add --pr <n> again (you keep your place in line)",
   workerInstructions: (self) =>
@@ -60,6 +77,7 @@ const en: Messages = {
     `on this screen, not through the main session. If their answer is a decision other work depends on, tell the main session with [decision]. ` +
     `After mq add, end your turn: don't wait for or poll CI, the merge or the deploy (no gh pr view/checks loops, no sleep; ${self} wait, ack and inbox are the main session's). ` +
     `The merge queue does all of that and sends you a message only when you have something to do; when merged, it removes this worktree. ` +
+    `If your change carries a risk only production shows (a migration, deploy or infra, native server.url, a live integration), add what to check: mq add --post-deploy "…" (repeatable); after the deploy you get [post-deploy check]. ` +
     `If a [rebase request], [merge returned] or [deploy failed] comes back, fix it here and mq add again, without telling the main; ` +
     `on [base updated], git pull before committing more. ` +
     `If the person wants this session to become a main session of its own (to split its work further), run \`${self} claim\` here.`,
@@ -105,7 +123,17 @@ const ko: Messages = {
     deployFailed: "[배포 확인 실패]",
     unblocked: "[선행 완료]",
     merged: "[머지 완료]",
+    postDeploy: "[배포 점검]",
+    postDeployProblem: "[배포 후 이상]",
+    checkOverdue: "[점검 미완료]",
   },
+  postDeployCheck: (id, verify, post) =>
+    `배포됐다. 지금 운영에서 아래를 점검한다(읽기 전용, 테스트 계정만):\n` +
+    [...verify.map((v) => `- (메인 기준) ${v}`), ...post.map((v) => `- (구현 위험) ${v}`)].join("\n") +
+    `\n이상 없으면: hwt mq release ${id} --result "항목별로 본 것" (그 뒤 큐가 이 워크트리를 정리한다). ` +
+    `이상 있으면: hwt mq problem ${id} "무엇이 어떻게" (워크트리는 남고 메인에 알려진다. revert 는 메인이 사용자와 정하고, 고침은 여기서 새 PR)`,
+  verifyInTask: (verify) =>
+    `배포 뒤 운영에서 성립해야 할 것(큐가 [배포 점검] 을 보내면 점검한다):\n${verify.map((v) => `- ${v}`).join("\n")}`,
   baseUpdated: "머지 큐가 베이스 브랜치를 PR 브랜치에 반영했다. 더 커밋하기 전에 git pull 한다. CI 는 다시 돌고, 따로 할 일은 없다",
   requeue: "고쳐서 push 한 뒤 hwt mq add --pr <n> 을 다시 한다(줄 순서는 유지된다)",
   workerInstructions: (self) =>
@@ -115,6 +143,7 @@ const ko: Messages = {
     `사용자에게 직접 묻는다. 그 답이 다른 작업에도 걸리는 결정이면 [결정 공유] 로 메인에 알린다. ` +
     `mq add 뒤에는 턴을 끝낸다. CI·머지·배포를 기다리거나 반복 확인하지 않는다(gh pr view/checks 반복, sleep 금지. ${self} wait·ack·inbox 는 메인 전용). ` +
     `그건 머지 큐가 다 하고, 할 일이 생길 때만 이 세션에 메시지가 온다. 머지되면 이 워크트리는 큐가 정리한다. ` +
+    `운영에서만 드러나는 위험(마이그레이션, 배포·인프라, 네이티브 server.url, 운영 연동)이 있는 변경이면 mq add --post-deploy "…"(여러 번 가능)로 점검할 것을 덧붙인다. 배포 뒤 [배포 점검] 이 온다. ` +
     `[리베이스 요청]·[머지 반려]·[배포 확인 실패] 가 오면 메인에 알리지 말고 여기서 고쳐 다시 mq add 한다. [베이스 반영] 이 오면 더 커밋하기 전에 git pull 한다. ` +
     `사용자가 이 세션을 독립된 메인 세션으로 만들자고 하면(작업을 더 나눠 맡기려고) 여기서 \`${self} claim\` 한다.`,
   taskProposal: (id, title, touches) =>

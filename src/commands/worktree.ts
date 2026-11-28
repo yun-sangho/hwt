@@ -12,7 +12,7 @@ import { messages, selfCommand } from "../messages.ts";
 import { claimMain, isMainSessionRepo, mainOnly, selfId } from "../session.ts";
 import { basename, die, printJson, run, runOut, shQuote, shellWords, sleepMs, slug, stamp, warn } from "../util.ts";
 
-const NEW_USAGE = "hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T] [--task-id ID] [--hold REASON] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks] [--over-limit]";
+const NEW_USAGE = "hwt new <branch|name> [--agent claude|codex|none|<cmd>] [--task TEXT] [--title T] [--task-id ID] [--verify CHECK]... [--hold REASON] [--resume-from ID [--fork]] [--dir D] [--no-space] [--no-hooks] [--over-limit]";
 
 export function worktreePath(main: string, branchOrName: string): string {
   const base = join(worktreesRoot(), basename(main));
@@ -29,7 +29,7 @@ export function cmdNew(args: string[]): void {
   const a = parse(
     args,
     {
-      opts: ["agent", "task", "title", "task-id", "resume-from", "dir", "hold"],
+      opts: ["agent", "task", "title", "task-id", "resume-from", "dir", "hold", "verify"],
       flags: ["fork", "no-space", "no-hooks", "over-limit"],
       // Herdr starts every worktree agent on its own (no parent) and can't name a terminal; these are
       // accepted so old callers keep working. `hc run` is the way to get a child agent.
@@ -42,6 +42,8 @@ export function cmdNew(args: string[]): void {
   const nospace = !!a.flag["no-space"];
   let task = a.opt.task ?? "";
   const taskId = a.opt["task-id"];
+  // What must hold in production after the deploy: kept in the ledger (worktree, task), checked in [post-deploy check].
+  const verify = a.opt.verify?.split("\n").map((s) => s.trim()).filter(Boolean) ?? [];
 
   const main = projectRoot();
   // In a git repo every child gets a worktree; in a plain folder it opens in the folder (or --dir), sharing it.
@@ -102,7 +104,9 @@ export function cmdNew(args: string[]): void {
   const base = { path: wt, branch, created, owner, ...(folder ? { kind: "folder" as const } : {}) };
   if (taskId) {
     updateLedger(main, (l) => {
-      for (const t of l.tasks ?? []) if (t.id === taskId) Object.assign(t, { state: "running", branch, owner: owner ?? t.owner ?? null, started: stamp() });
+      for (const t of l.tasks ?? []) {
+        if (t.id === taskId) Object.assign(t, { state: "running", branch, owner: owner ?? t.owner ?? null, started: stamp(), ...(verify.length ? { verify } : {}) });
+      }
     });
   }
 
@@ -117,6 +121,7 @@ export function cmdNew(args: string[]): void {
       l.worktrees[branch] = {
         path: wt, title, terminal: null, name: null, session: null, task: task.slice(0, 600), owner, created: stamp(), state: "active",
         ...(a.opt.hold ? { hold: a.opt.hold } : {}),
+        ...(verify.length ? { verify } : {}),
       };
     });
     printJson({ ...base, space: null, terminal: null, setup: st });
@@ -149,6 +154,7 @@ export function cmdNew(args: string[]): void {
     session = plan.session;
     // Working sessions report through `hwt tell`, which finds their main session and keeps an inbox copy.
     const msg = messages(langFor(main));
+    if (task && verify.length) task += `\n\n${msg.verifyInTask(verify)}`;
     if (task && (isMainSessionRepo(main) || folder)) task += `\n\n${msg.workerInstructions(selfCommand())}`;
     if (task && folder) task += `\n${msg.folderChild(branch, wt)}`;
     if (task) argv.push(task);
@@ -175,6 +181,7 @@ export function cmdNew(args: string[]): void {
       task: task ? task.slice(0, 600) : (prev?.task ?? ""), owner: owner ?? prev?.owner ?? null,
       created: prev?.created ?? stamp(), state: "active",
       ...((a.opt.hold ?? prev?.hold) ? { hold: a.opt.hold ?? prev?.hold } : {}),
+      ...((verify.length ? verify : prev?.verify)?.length ? { verify: verify.length ? verify : prev!.verify } : {}),
       ...(folder ? { kind: "folder" as const } : {}),
     };
   });

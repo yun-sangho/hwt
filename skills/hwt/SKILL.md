@@ -63,6 +63,8 @@ hwt task done|drop <id> [--why "…"]
 
 **Instructions (`--task`)**: scope, done criteria, verification commands, and "push, open a PR, right away run `hwt mq add --pr <n>` (don't wait for CI), then end the turn". hwt appends how to report (`hwt tell`, only for decisions) itself.
 
+**Production criteria (`--verify`)**: what must hold in production after the deploy goes in at `hwt new … --verify "<what must hold>"` (repeatable). The main knows the result it wants best when it makes the task. It is kept in the ledger (worktree, task) through context compaction, appended to the instructions, and carried by the merge request. The working session can't change or remove it.
+
 **Naming**: call working sessions "worktree (title)", e.g. `feat-slot-edit (edit slot)`; never by terminal or session id. Titles are plain words: no numbers of your own ("T14 …"). They aren't the task's id, don't survive a restart or another main, and collide; the task is linked by `--task-id`. Their terminals carry the label `hwt.worktree=<worktree>`.
 
 **Merge queue** — a queue in the ledger, drained by a runner. One runner per repo processes every main's items and tells each owner what needs attention. The runner is either:
@@ -76,6 +78,7 @@ hwt mq run [--watch] [--interval S] [--timeout S]   # --watch keeps checking CI 
 hwt mq run --dry-run          # what it would do for each item, changing nothing
 hwt mq ls [--all] / mq next   # place in line, owner, blocked_by, checks; next = your next item and its plan
 hwt mq approve <id>           # the person said yes (waiting_user → queued)
+hwt mq edit <id> [--verify C]... [--post-deploy C]...   # change the post-deploy checks (main only)
 hwt mq prio <id> <n> / mq drop <id> / mq log <id>   # reorder (higher first), take out, history of moves
 hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --force (the person's override)
 ```
@@ -83,6 +86,8 @@ hwt mq set <id> <state> [--force]   # manual move; only allowed moves unless --f
 - While a PR waits in GitHub's queue, the runner checks the rest of the list and sends approval requests. It submits eligible independent PRs up to each GitHub queue's reported build limit. Direct merges and branch updates wait for in-flight PRs. Repos with `mergeQueue.verify` or `mergeQueue.gc` submit one PR at a time.
 - Per item the runner plans one step: **merge** (CI passed, approval auto or approved) → `gh pr merge --squash` (`mergeQueue.method`) → deploy check (`mergeQueue.verify`) → cleanup: `hwt rm -D --kill-agents`, remote branch deleted, the repo's gc (`mergeQueue.gc`), main checkout fast-forwarded, the task `done`. **update** (behind base, no conflict) → `gh pr update-branch`, wait for CI again (up to `maxUpdates`, then return). **wait** (CI running) / **blocked** (`after`). **ask** (mergeApproval path or lines, a `note` on the branch, branch protection) → `waiting_user` + `[merge approval]` in the owning main's inbox. **return** (conflict, CI failed, dirty, unpushed, no PR) → `returned` + `[rebase request]`/`[merge returned]` to the working session (its main: a log line)
 - Deploy check failed → `failed`, worktree kept, log sent to the working session; fix in the same worktree and `mq add` again
+- **Post-deploy check**: an item with `verify` (the main's criteria) or `post_deploy` (implementation risks the working session added with `mq add --post-deploy`) isn't cleaned up after a passed deploy check: it goes to `checking`. The main checkout is fast-forwarded first, the working session gets `[post-deploy check]`, and the queue goes on. The working session checks production read-only with test accounts; `hwt mq release --result "…"` → cleaned up on the next round, the main gets `[merged]`. `hwt mq problem "…"` → `failed`, worktree kept, the main gets `[post-deploy problem]`: revert is decided with the person, the fix is a new PR from that worktree. No answer within `mergeQueue.checkTimeout` (default 7200 s), or no live working session → `[check overdue]` to the main (never cleaned up on its own). A commit whose deploy runs were all skipped deployed nothing and skips the check. Neither list → cleaned up right away, as before
+- `[merge approval]` lists the post-deploy checks. To change them, in that turn: `hwt mq edit <id> --verify … --post-deploy …` (replaces the lists)
 - A worktree whose session is a main of its own isn't removed on cleanup
 - The working session gets returns, rebase requests, `[base updated]` and deploy logs in full and fixes them itself; its main only gets one line in its log
 - **Never block on the queue.** After `mq approve`, or while PRs are in line, go on with other work and the person's requests. Don't wait in the foreground for a merge: no loops over `mq ls`, no `sleep`, no `gh pr view` polling, no foreground `mq run`. The result comes to you: `[merged]`, `[deploy failed]`, `[merge returned]`, `[merge approval]`. Tell the person then. Working sessions too: after `mq add` they end the turn and never watch CI, the merge or the deploy
@@ -99,6 +104,9 @@ hwt tell "[…] …"              # to your main (the worktree's owner): inbox f
 hwt claim                     # only when the person wants this session to become a main of its own
 hwt task add "<title>" --touches …   # propose separate follow-up work instead of doing it
 hwt mq add --pr <n> "summary" # right after opening the PR (the queue waits for CI). Then end the turn: no gh pr view/checks loops. [rebase request]/[merge returned]/[deploy failed]/[base updated] come as messages
+hwt mq add --pr <n> --post-deploy "…"   # a risk only production shows (migration, deploy/infra, native server.url, live integration): check it after the deploy
+hwt mq release --result "per item"     # [post-deploy check] all fine → the queue cleans up
+hwt mq problem "what and how"          # [post-deploy check] found a problem → failed, worktree kept, [post-deploy problem] to the main
 ```
 - Don't report progress, status or completion: every `tell` is a turn in the main's conversation. Send only what it decides: `[worktree request]`, `[task proposal]`, `[decision]` (an answer from the person that other work depends on), anything affecting other work. Short; long text goes in a file or the PR body
 - The PR, its review, CI and the merge are yours: `mq add` is the whole report. When a `[rebase request]`, `[merge returned]` or `[deploy failed]` comes back, fix it here and `mq add` again without telling the main

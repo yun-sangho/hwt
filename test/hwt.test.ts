@@ -513,8 +513,11 @@ describe("main-session workflow", () => {
 
   test("worker instructions say to end the turn, not wait for the merge", () => {
     config({ mainSession: true });
-    hwt(["new", "feat/i", "--task", "go"]);
+    hwt(["new", "feat/i", "--task", "go", "--verify", "signup works"]);
     const task = (fake().calls[0]!.arg.argv as string[]).at(-1)!;
+    expect(task).toContain("these must hold in production");
+    expect(task).toContain("- signup works");
+    expect(task).toContain("--post-deploy");
     expect(task).toContain("end your turn");
     expect(task).toContain("don't wait for CI");
     expect(task).not.toContain("--json state");
@@ -928,6 +931,86 @@ describe("merge queue runner", () => {
         expect(item("feat/a")).toMatchObject({ state: "failed" });
         expect(item("feat/a").why).toContain(why);
       }
+    });
+  });
+
+  describe("post-deploy check", () => {
+    const inboxTexts = () => readFileSync(join(repo, ".git", "hwt", "inbox.jsonl"), "utf8").trim().split("\n").map((x) => JSON.parse(x)).filter((x) => x.wake !== false).map((x) => x.text as string);
+    /** A worktree made with the main's --verify, queued with the working session's --post-deploy. */
+    const checked = (branch: string, n: number, verify: string[], post: string[]) => {
+      const wt = json(hwt(["new", branch, "--no-space", ...verify.flatMap((v) => ["--verify", v])], t1)).path;
+      writeFileSync(join(wt, branch.replace("/", "-")), "x\n");
+      sh(["git", "add", "."], wt);
+      sh(["git", "commit", "-qm", branch], wt);
+      sh(["git", "push", "-q", "-u", "origin", branch], wt);
+      pr(n, branch);
+      const add = json(hwt(["mq", "add", "--pr", String(n), ...post.flatMap((v) => ["--post-deploy", v])], { cwd: wt }));
+      expect(add.code ?? 0).toBe(0);
+      return { wt, add };
+    };
+
+    test("waits for the working session's release, without holding up the queue", () => {
+      config({ mainSession: true });
+      sh(["git", "push", "-q", "origin", "main"]);
+      const a = checked("feat/a", 1, ["login works", "old data shows"], ["migration ran"]);
+      expect(a.add.after_deploy).toBe("verify: login works | old data shows; post-deploy: migration ran");
+      expect(item("feat/a")).toMatchObject({ verify: ["login works", "old data shows"], post_deploy: ["migration ran"] });
+      work("feat/b", 2);
+      expect(run().merged).toEqual(["feat/a"]);
+      expect(item("feat/a")).toMatchObject({ state: "checking" });
+      // a's check doesn't hold up b: it is brought up to date and merged while a is still being checked.
+      expect(item("feat/b")).toMatchObject({ state: "updating" });
+      setFake((s) => void (s.prs![2]!.checks = "pass"));
+      run();
+      expect(item("feat/b")).toMatchObject({ state: "done" });
+      expect(item("feat/a")).toMatchObject({ state: "checking" });
+      expect(existsSync(a.wt)).toBe(true);
+      // The main checkout is on the merged base already.
+      expect(existsSync(join(repo, "feat-a"))).toBe(true);
+      // No live working session here (--no-space): the main hears it right away.
+      expect(inboxTexts().some((t) => t.startsWith("[check overdue]") && t.includes("no live working session"))).toBe(true);
+      // A working session can't queue the branch again while it is checked, nor change the main's criteria.
+      expect(hwt(["mq", "add", "--pr", "1"], { cwd: a.wt }).err).toContain("post-deploy check");
+      expect(hwt(["mq", "edit", item("feat/a").id, "--verify", "nothing"], { cwd: a.wt }).code).toBe(1);
+      // Released: the next run cleans it up and the main hears [merged].
+      expect(json(hwt(["mq", "release", "--result", "all three fine"], { cwd: a.wt })).released).toBe(item("feat/a").id);
+      run();
+      expect(item("feat/a")).toMatchObject({ state: "done", check_result: "all three fine" });
+      expect(existsSync(a.wt)).toBe(false);
+    });
+
+    test("a problem fails it, keeps the worktree and wakes the main; an overdue check tells the main once", () => {
+      config({ mainSession: true, mergeQueue: { checkTimeout: 0 } });
+      sh(["git", "push", "-q", "origin", "main"]);
+      const a = checked("feat/a", 1, [], ["push still sends"]);
+      run();
+      expect(item("feat/a")).toMatchObject({ state: "checking" });
+      const p = json(hwt(["mq", "problem", "no push arrives on Android"], { cwd: a.wt }));
+      expect(p.state).toBe("failed");
+      expect(item("feat/a")).toMatchObject({ state: "failed", check_result: "no push arrives on Android" });
+      expect(inboxTexts().some((t) => t.startsWith("[post-deploy problem]") && t.includes("no push arrives on Android"))).toBe(true);
+      run();
+      expect(existsSync(a.wt)).toBe(true);
+      // The main may change the checks (say while approving): the lists are replaced.
+      const e = json(hwt(["mq", "edit", item("feat/a").id, "--post-deploy", "x", "--post-deploy", "y"], t1));
+      expect(e.post_deploy).toEqual(["x", "y"]);
+    });
+
+    test("a commit whose deploy runs were all skipped deployed nothing: no check", () => {
+      config({ mainSession: true, mergeQueue: { deploy: { workflows: ["deploy.yml"] } } });
+      const env = { env: { HWT_CHILD: "", HC_TERMINAL_ID: "t1", HWT_DEPLOY_POLL_MS: "50", HWT_DEPLOY_APPEAR_MS: "400" } };
+      sh(["git", "push", "-q", "origin", "main"]);
+      checked("feat/a", 1, ["page loads"], []);
+      json(hwt(["mq", "run"], env));
+      expect(item("feat/a")).toMatchObject({ state: "failed" }); // no run appeared yet
+      setFake((s) => {
+        s.runs = [{ databaseId: 1, workflow: "deploy.yml", sha: item("feat/a").sha, status: "completed", conclusion: "skipped", completeAfter: 0, then: "skipped" }];
+      });
+      const l = ledger();
+      for (const m of l.merges) if (m.branch === "feat/a") Object.assign(m, { state: "verifying" });
+      writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
+      json(hwt(["mq", "run"], env));
+      expect(item("feat/a")).toMatchObject({ state: "done" });
     });
   });
 

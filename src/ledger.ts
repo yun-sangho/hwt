@@ -42,6 +42,8 @@ export interface WorktreeRecord {
   owner?: string | null;
   /** Its session became a main of its own (hwt claim there). */
   self_main?: boolean;
+  /** What must hold in production once its PR is deployed (hwt new --verify); its merge request carries it. */
+  verify?: string[];
   /** "folder": a child in a plain folder, no checkout of its own. Default: a git worktree. */
   kind?: "worktree" | "folder";
   /** The Herdr space hwt opened for it. */
@@ -65,6 +67,8 @@ export interface Task {
   added: string;
   state: TaskState;
   decision: string | null;
+  /** What must hold in production once it ships (hwt new --task-id … --verify). */
+  verify?: string[];
   why: string | null;
   branch: string | null;
   decided?: string;
@@ -79,6 +83,7 @@ export type MergeState =
   | "waiting_user" // needs the person's yes (hwt mq approve)
   | "merging"
   | "verifying" // merged; the repo's deploy check runs
+  | "checking" // deployed; the working session checks the live site (verify, post_deploy), then releases it
   | "cleaning" // verified; worktree, agent and branches go
   | "done"
   | "returned" // back to the working session to fix; it mq adds again
@@ -113,6 +118,15 @@ export interface Merge {
   updates?: number;
   /** The merge commit, once merged. */
   sha?: string;
+  /** What must hold in production after the deploy: the main's criteria (hwt new --verify), only it changes them. */
+  verify?: string[];
+  /** Risks of this implementation to check after the deploy: the working session's (hwt mq add --post-deploy). */
+  post_deploy?: string[];
+  /** checking: when it started; released (hwt mq release) with what the check found; overdue: the main was told. */
+  checking_since?: string;
+  released?: string;
+  check_result?: string;
+  check_overdue?: string;
   history?: MergeEvent[];
   approved?: string;
   approved_why?: string;

@@ -11,10 +11,10 @@ import { die, printJson, shortId, stamp } from "../util.ts";
 import { tell } from "./session.ts";
 import { removeWorktree } from "./worktree.ts";
 import {
-  blockedBy, IN_FLIGHT, leaseLive, move, mqChecks, nextSeq, OPEN, ordered, previewQueue, runQueue, STATES, WAITING, type PreviewEntry,
+  blockedBy, checkList, IN_FLIGHT, leaseLive, move, mqChecks, nextSeq, OPEN, ordered, previewQueue, runQueue, STATES, WAITING, type PreviewEntry,
 } from "../mq.ts";
 import type { Merge } from "../ledger.ts";
-import { actsAsMain, ownerOf, owns, selfId } from "../session.ts";
+import { actsAsMain, notifyMain, ownerOf, owns, selfId } from "../session.ts";
 import { daemonLog, installService, liveDaemon, runDaemon, serviceInstalled, uninstallService } from "../daemon.ts";
 import { knownRepos } from "../repos.ts";
 
@@ -120,7 +120,8 @@ const MQ_USAGE = `hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT]
        mq ls [--all] | next | log <id>
        mq run [--watch] [--interval S] [--timeout S] [--dry-run]
        mq daemon [--interval S] [--once] | daemon status | daemon install [--interval S] | daemon uninstall
-       mq approve <id> [--why T] | drop <id> [--why T] | prio <id> <n> | set <id> <state> [--why T] [--force]`;
+       mq approve <id> [--why T] | edit <id> [--verify C]... [--post-deploy C]... | drop <id> [--why T] | prio <id> <n> | set <id> <state> [--why T] [--force]
+       mq release [id] [--result T] | problem [id] TEXT   (a working session's answer to [post-deploy check])`;
 
 /** Find item <id>, change it under the ledger lock, or die when there is none. */
 function withItem(main: string, id: string, change: (m: Merge) => void): Merge {
@@ -142,7 +143,7 @@ export function cmdMq(args: string[]): void {
     case "-h":
       return void process.stdout.write(`usage: ${MQ_USAGE}\n`);
     case "add": {
-      const a = parse(rest, { opts: ["pr", "after", "priority"] }, "hwt mq add [--pr N] [--after b1,b2] [--priority N] [TEXT]");
+      const a = parse(rest, { opts: ["pr", "after", "priority", "post-deploy"] }, "hwt mq add [--pr N] [--after b1,b2] [--priority N] [--post-deploy CHECK]... [TEXT]");
       const main = projectRoot();
       const text = a.pos.join(" ");
       const pr = a.opt.pr ? Number(a.opt.pr) : null;
@@ -159,17 +160,25 @@ export function cmdMq(args: string[]): void {
         const merges = l.merges ?? [];
         const flying = merges.find((m) => m.branch === b && IN_FLIGHT.includes(m.state));
         if (flying) die(`${b} is ${flying.state} (${flying.id}); wait for it`);
+        const checking = merges.find((m) => m.branch === b && m.state === "checking");
+        if (checking) die(`${b} is deployed and waits for its post-deploy check (${checking.id}): hwt mq release ${checking.id} --result "…" or hwt mq problem ${checking.id} "…" first`);
         for (let suffix = 2; merges.some((m) => m.id === id); suffix++) id = `${initialId}-${suffix}`;
         // A branch queued again (after a return or failure) keeps its place in line, and replaces the old request.
         const old = merges.filter((m) => m.branch === b && [...WAITING, "returned", "failed"].includes(m.state));
         kept = old.map((m) => m.seq).find((x) => x !== undefined);
         const prev = old[0];
+        // The main's criteria come from the worktree (hwt new --verify) or its task; the working session only adds.
+        const w = l.worktrees[b];
+        const verify = w?.verify ?? (l.tasks ?? []).find((t) => t.branch === b && t.verify?.length)?.verify ?? prev?.verify;
+        const post = a.opt["post-deploy"]?.split("\n").map((s) => s.trim()).filter(Boolean) ?? prev?.post_deploy;
         const item: Merge = {
           id, branch: b, pr, path: here, from: herdr.myTerminal(), note: text, requested: stamp(), state: "queued", why: null,
           seq: kept ?? nextSeq(l),
           priority: priority ?? prev?.priority ?? 0,
           after: a.opt.after ? a.opt.after.split(",").filter(Boolean) : (prev?.after ?? []),
           updates: 0,
+          ...(verify?.length ? { verify } : {}),
+          ...(post?.length ? { post_deploy: post } : {}),
           history: [{ at: stamp(), from: null, to: "queued", by: herdr.myTerminal() || b, why: old.length ? `again (was ${old.map((m) => m.id).join(", ")})` : null }],
         };
         for (const m of old) move(m, "dropped", b, `replaced by ${id}`, true);
@@ -177,8 +186,10 @@ export function cmdMq(args: string[]): void {
       });
       // A log entry only: the runner takes it from the queue; the main is woken only if it needs a decision.
       tell(`${messages(langFor(main)).tags.mergeRequest} ${id} ${b}${pr ? ` PR #${pr}` : ""}${text ? ` — ${text}` : ""}`, { wake: false });
+      const queued = (readLedger(main).merges ?? []).find((m) => m.id === id);
       return printJson({
         merge: id, branch: b, state: "queued", place_kept: kept !== undefined,
+        ...(queued && checkList(queued) ? { after_deploy: checkList(queued) } : {}),
         runner: liveDaemon() ? "daemon" : "main (hwt mq run)",
         next: "end your turn: don't wait for or poll CI, the merge or the deploy; the queue messages you if there is something to fix",
       });
@@ -272,6 +283,49 @@ export function cmdMq(args: string[]): void {
         runner: liveDaemon() ? "daemon" : "none: run hwt mq run --watch in the background",
         next: "don't wait or poll for the merge; [merged], [deploy failed] or [merge returned] comes to you",
       });
+    }
+    case "release":
+    case "problem": {
+      // The working session's answer to [post-deploy check]. The id defaults to this branch's item in checking.
+      const usage = sub === "release" ? "hwt mq release [id] [--result TEXT]" : "hwt mq problem [id] TEXT";
+      const a = parse(rest, { opts: ["result"] }, usage);
+      const main = projectRoot();
+      const l = readLedger(main);
+      let id = a.pos[0] && /^M\d/.test(a.pos[0]) && l.merges?.some((m) => m.id === a.pos[0]) ? a.pos.shift()! : undefined;
+      id ??= (l.merges ?? []).find((m) => m.state === "checking" && m.branch === currentBranch())?.id;
+      if (!id) die(`no merge request in checking here; usage: ${usage}`);
+      const text = sub === "release" ? (a.opt.result ?? a.pos.join(" ")) : a.pos.join(" ");
+      if (sub === "problem" && !text) die(`say what is wrong; usage: ${usage}`);
+      const by = herdr.myTerminal() || selfId(l) || "user";
+      const item = withItem(main, id, (m) => {
+        if (m.state !== "checking") die(`${id} is ${m.state}, not checking`);
+        if (sub === "release") Object.assign(m, { released: stamp(), check_result: text });
+        else {
+          m.check_result = text;
+          move(m, "failed", by, `post-deploy check: ${text}`);
+        }
+      });
+      if (sub === "problem") {
+        const owner = ownerOf(readLedger(main), item.branch);
+        const msg = `${messages(langFor(main)).tags.postDeployProblem} ${id} ${item.branch}${item.pr ? ` PR #${item.pr}` : ""}: ${text} ` +
+          `(the worktree stays; decide with the person whether to revert; the working session fixes it in a new PR)`;
+        if (owner) notifyMain(main, owner, { branch: item.branch, path: item.path, text: msg, wake: true });
+        return printJson({ problem: id, branch: item.branch, state: "failed", next: "the main decides about a revert; fix it here in a new PR (push, PR, mq add), then end your turn" });
+      }
+      return printJson({ released: id, branch: item.branch, next: "end your turn: the queue cleans up this worktree and tells the main [merged]" });
+    }
+    case "edit": {
+      // The main changes what is checked after the deploy (say while approving): the lists are replaced.
+      const a = parse(rest, { opts: ["verify", "post-deploy"] }, "hwt mq edit <id> [--verify CHECK]... [--post-deploy CHECK]...");
+      const main = projectRoot();
+      if (!actsAsMain(main)) die("mq edit is a main session's (a working session adds checks with mq add --post-deploy)");
+      const id = a.pos[0] ?? die("usage: hwt mq edit <id> [--verify CHECK]... [--post-deploy CHECK]...");
+      const list = (v: string | undefined) => v?.split("\n").map((s) => s.trim()).filter(Boolean);
+      const item = withItem(main, id, (m) => {
+        if (a.opt.verify !== undefined) m.verify = list(a.opt.verify);
+        if (a.opt["post-deploy"] !== undefined) m.post_deploy = list(a.opt["post-deploy"]);
+      });
+      return printJson({ id, branch: item.branch, verify: item.verify ?? [], post_deploy: item.post_deploy ?? [] });
     }
     case "drop": {
       const a = parse(rest, { opts: ["why"] }, "hwt mq drop <id> [--why TEXT]");

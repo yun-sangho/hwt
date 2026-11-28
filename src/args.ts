@@ -56,7 +56,8 @@ export function parse(args: string[], spec: Spec, usage: string): Parsed {
         value = args[++i];
         if (value === undefined) die(`--${name} needs a value\nusage: ${usage}`);
       }
-      opt[name] = value;
+      // Given again: the values pile up, one per line (lists like --verify).
+      opt[name] = opt[name] === undefined ? value : `${opt[name]}\n${value}`;
     } else if (flags.has(name)) {
       flag[name] = true;
     } else {
