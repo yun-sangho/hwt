@@ -50,11 +50,15 @@ export function liveDaemon(): DaemonInfo | null {
   return Date.now() - d.beat < Math.max(3 * d.interval * 1000, 10 * 60_000) ? d : null;
 }
 
-/** Work the daemon would do in this repo now. waiting_user without approval waits for a person. */
+/**
+ * Work the daemon would do in this repo now. waiting_user without approval waits for a person; checking waits for
+ * the working session, but a release is to clean up and an unreleased one may run out of time.
+ */
 function hasWork(main: string): boolean {
   const l = readLedger(main);
   return (l.merges ?? []).some(
-    (x) => IN_FLIGHT.includes(x.state) || x.state === "queued" || x.state === "updating" || (x.state === "waiting_user" && !!x.approved),
+    (x) => IN_FLIGHT.includes(x.state) || x.state === "queued" || x.state === "updating" || (x.state === "waiting_user" && !!x.approved) ||
+      (x.state === "checking" && (!!x.released || !x.check_overdue)),
   );
 }
 

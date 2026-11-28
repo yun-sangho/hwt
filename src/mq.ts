@@ -6,6 +6,10 @@
 //   plan      a pure function from an item and its checks to the next step (merge, update, wait, return, ask).
 //   runner    `hwt mq run`: one runner per repo at a time (a lease in the ledger).
 //   batch     mergeQueue.batch: merge every ready PR in a pass, then one deploy check for them all.
+//   checking  an item with verify (the main's criteria, hwt new --verify) or post_deploy (the working session's,
+//             mq add --post-deploy) waits after its deploy for the working session to check production and
+//             release it (hwt mq release) or report a problem (hwt mq problem). It holds only its worktree:
+//             the queue goes on. A commit that deployed nothing (every deploy run skipped) skips it.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { hostname } from "node:os";
@@ -25,7 +29,8 @@ export const MOVES: Record<MergeState, MergeState[]> = {
   updating: ["queued", "waiting_user", "merging", "verifying", "returned", "dropped"],
   waiting_user: ["queued", "returned", "dropped"],
   merging: ["verifying", "queued", "returned"],
-  verifying: ["cleaning", "done", "failed", "returned"],
+  verifying: ["checking", "cleaning", "done", "failed", "returned"],
+  checking: ["cleaning", "done", "failed", "dropped"],
   cleaning: ["verifying", "done", "returned"],
   returned: ["queued", "dropped"],
   // A person may fix a failed deploy by hand and call it done.
@@ -39,7 +44,16 @@ export const WAITING: MergeState[] = ["queued", "updating", "waiting_user"];
 /** Requests submitted to GitHub or being finalized locally. */
 export const IN_FLIGHT: MergeState[] = ["merging", "verifying", "cleaning"];
 /** Shown by default (not finished). */
-export const OPEN: MergeState[] = [...WAITING, ...IN_FLIGHT, "returned"];
+export const OPEN: MergeState[] = [...WAITING, ...IN_FLIGHT, "checking", "returned"];
+
+/** What the working session checks in production after the deploy, if anything. */
+export const checksAfterDeploy = (m: Pick<Merge, "verify" | "post_deploy">) => (m.verify?.length ?? 0) + (m.post_deploy?.length ?? 0) > 0;
+
+/** The checks, for a message: "verify: a | b; post-deploy: c", or "". */
+export function checkList(m: Pick<Merge, "verify" | "post_deploy">): string {
+  const parts = [m.verify?.length ? `verify: ${m.verify.join(" | ")}` : "", m.post_deploy?.length ? `post-deploy: ${m.post_deploy.join(" | ")}` : ""];
+  return parts.filter(Boolean).join("; ");
+}
 
 /** Move <m> to <to>, or throw when MOVES doesn't allow it (force skips the check, for a person's override). */
 export function move(m: Merge, to: MergeState, by: string, why: string | null = null, force = false): void {
@@ -523,6 +537,8 @@ export function runQueue(main: string, o: RunOptions): RunReport {
   const batching = batchMax > 0 && checked;
   const report: RunReport = { events: [], merged: [], waiting: [], unblocked_tasks: [] };
   if (o.dryRun) report.dry_run = true;
+  // Merge commits whose deploy runs were all skipped: nothing went live, so no post-deploy check.
+  const undeployed = new Set<string>();
 
   /** Change one item in the ledger (under its lock) and log the move. */
   const moveItem = (id: string, to: MergeState, why: string | null, change?: (x: Merge) => void) => {
@@ -541,11 +557,12 @@ export function runQueue(main: string, o: RunOptions): RunReport {
    * Give the working session (if live) what came back to it, in full. Its main gets one line in its log (not in
    * front of it: the working session handles it), or nothing with toMain false.
    */
-  const giveBack = (x: Merge, text: string, toMain = true) => {
+  const giveBack = (x: Merge, text: string, toMain = true): boolean => {
     const agent = herdr.terminals().find((t) => herdr.isLive(t) && herdr.isAgent(t) && herdr.inDir(t, x.path))?.address;
     if (agent) herdr.send(agent, text);
     const owner = toMain ? ownerOf(readLedger(main), x.branch) : null;
     if (owner) notifyMain(main, owner, { branch: x.branch, path: x.path, text: text.split("\n")[0]!, wake: false });
+    return !!agent;
   };
 
   const fetch = () => {
@@ -556,7 +573,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
   const verify = (xs: Merge[]): { why: string; log: string } | null => {
     const last = xs.at(-1)!;
     if (cfg.deploy) {
-      const failed = checkDeploy(main, cfg.deploy, xs.map((y) => ({ sha: y.sha ?? "", branch: y.branch, pr: y.pr })), cfg.verifyTimeout);
+      const failed = checkDeploy(main, cfg.deploy, xs.map((y) => ({ sha: y.sha ?? "", branch: y.branch, pr: y.pr })), cfg.verifyTimeout, undeployed);
       if (failed || !cfg.verify) return failed;
     }
     const all = (f: (y: Merge) => string) => xs.map(f).join(" ");
@@ -635,9 +652,61 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     if (owner && owner !== o.by) notifyMain(main, owner, { branch: x.branch, path: main, text, wake: true });
   };
 
+  /** Keep the main checkout on the merged base, so new worktrees start from it. */
+  const fastForward = () => {
+    fetch();
+    const base = baseBranch(main);
+    const tracked = (gitOut(["status", "--porcelain", "--untracked-files=no"], main) ?? "") === "";
+    if (currentBranch(main) === base && tracked && hasRef(main, `refs/remotes/origin/${base}`)) {
+      run(["git", "merge", "-q", "--ff-only", `origin/${base}`], { cwd: main });
+    }
+  };
+
+  /** The owning main hears it, awake. */
+  const tellOwner = (x: Merge, text: string) => {
+    const owner = ownerOf(readLedger(main), x.branch);
+    if (owner) notifyMain(main, owner, { branch: x.branch, path: main, text, wake: true });
+    else warn(text);
+  };
+
+  /** Deployed with checks to make: the working session checks production; the queue goes on meanwhile. */
+  const startCheck = (x: Merge) => {
+    fastForward();
+    moveItem(x.id, "checking", checkList(x), (y) => { y.checking_since = stamp(); });
+    const text = `${m.tags.postDeploy} ${x.id} ${x.branch}${x.pr ? ` PR #${x.pr}` : ""}: ${m.postDeployCheck(x.id, x.verify ?? [], x.post_deploy ?? [])}`;
+    if (!giveBack(x, text)) {
+      tellOwner(x, `${m.tags.checkOverdue} ${x.id} ${x.branch}: deployed, but no live working session to check it (${checkList(x)}). Resume it (hwt new ${x.branch} --resume-from …) or check yourself, then hwt mq release ${x.id} --result "…"`);
+      updateLedger(main, (l) => {
+        const y = (l.merges ?? []).find((z) => z.id === x.id);
+        if (y) y.check_overdue = stamp();
+      });
+    }
+  };
+
+  /** An item in checking: released → cleanup; out of time → its main hears it, once. */
+  const tendCheck = (x: Merge): boolean => {
+    if (x.released) {
+      cleanUp(x);
+      return true;
+    }
+    const since = Date.parse(x.checking_since ?? "");
+    if (!x.check_overdue && Number.isFinite(since) && Date.now() - since > (cfg.checkTimeout ?? 7200) * 1000) {
+      updateLedger(main, (l) => {
+        const y = (l.merges ?? []).find((z) => z.id === x.id);
+        if (y) y.check_overdue = stamp();
+      });
+      tellOwner(x, `${m.tags.checkOverdue} ${x.id} ${x.branch}: the post-deploy check isn't done after ${Math.round((cfg.checkTimeout ?? 7200) / 60)} min (${checkList(x)}); the worktree stays until hwt mq release ${x.id} or hwt mq problem ${x.id} "…"`);
+    }
+    return false;
+  };
+
   const cleanUp = (x: Merge): void => {
     const { id } = x;
     const verified = x.state === "cleaning";
+    if (!verified && x.state !== "checking" && checksAfterDeploy(x) && !(x.sha && undeployed.has(x.sha))) {
+      startCheck(x);
+      return;
+    }
     if (!cfg.cleanup) {
       done(x, null);
       return;
@@ -661,13 +730,7 @@ export function runQueue(main: string, o: RunOptions): RunReport {
       const g = run(["sh", "-c", cfg.gc], { cwd: main });
       if (!g.ok) notes.push(`gc failed: ${tail(g.err || g.out, 3)}`);
     }
-    // Keep the main checkout on the merged base, so new worktrees start from it.
-    fetch();
-    const base = baseBranch(main);
-    const tracked = (gitOut(["status", "--porcelain", "--untracked-files=no"], main) ?? "") === "";
-    if (currentBranch(main) === base && tracked && hasRef(main, `refs/remotes/origin/${base}`)) {
-      run(["git", "merge", "-q", "--ff-only", `origin/${base}`], { cwd: main });
-    }
+    fastForward();
     const previouslyUnblocked = report.unblocked_tasks.length;
     updateLedger(main, (l2) => {
       for (const t of l2.tasks ?? []) {
@@ -750,7 +813,9 @@ export function runQueue(main: string, o: RunOptions): RunReport {
         if (x.state !== "waiting_user") {
           moveItem(x.id, "waiting_user", s.why);
           const owner = ownerOf(readLedger(main), x.branch);
-          const text = `${m.tags.approval} ${x.id} ${x.branch}${x.pr ? ` PR #${x.pr}` : ""}: ${s.why} — hwt mq approve ${x.id}`;
+          const checks = checkList(x);
+          const text = `${m.tags.approval} ${x.id} ${x.branch}${x.pr ? ` PR #${x.pr}` : ""}: ${s.why} — hwt mq approve ${x.id}` +
+            (checks ? ` (after the deploy, checked in production: ${checks}; change with hwt mq edit ${x.id} --verify … --post-deploy …)` : "");
           if (owner) notifyMain(main, owner, { branch: x.branch, path: x.path, text, wake: true });
           else warn(text);
         }
@@ -771,6 +836,8 @@ export function runQueue(main: string, o: RunOptions): RunReport {
     let l = readLedger(main);
     const pending: PendingMerges = new Map();
     let finalized = false;
+    for (const x of ordered(l).filter((y) => y.state === "checking")) if (tendCheck(x)) finalized = true;
+    l = readLedger(main);
     for (const x of ordered(l).filter((y) => IN_FLIGHT.includes(y.state))) {
       const progress = reconcile(x);
       if (progress === "restart") finalized = true;

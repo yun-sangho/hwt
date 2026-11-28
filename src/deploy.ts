@@ -49,7 +49,9 @@ function findRun(main: string, workflow: string, sha: string): Run | null | "err
 }
 
 /** null when every deploy ran and the site answers; else why, and lines for the log. */
-export function checkDeploy(main: string, d: DeployConfig, targets: DeployTarget[], timeoutS: number): { why: string; log: string } | null {
+export function checkDeploy(
+  main: string, d: DeployConfig, targets: DeployTarget[], timeoutS: number, undeployed?: Set<string>,
+): { why: string; log: string } | null {
   const end = Date.now() + timeoutS * 1000;
   const appearBy = Date.now() + appearMs();
   const log: string[] = [];
@@ -90,6 +92,10 @@ export function checkDeploy(main: string, d: DeployConfig, targets: DeployTarget
       };
     }
     return { why: `deploy ${r.conclusion}: ${p.w} for ${p.t.branch}`, log: `${line}\nlog: gh run view ${r.databaseId} --log-failed` };
+  }
+  // A commit whose every deploy run was skipped deployed nothing: there is nothing live to check for it.
+  for (const t of targets) {
+    if (open.filter((p) => p.t === t).every((p) => p.run!.conclusion === "skipped")) undeployed?.add(t.sha);
   }
   for (const url of d.urls ?? []) {
     let last = "";

@@ -30,6 +30,11 @@ export interface MergeQueueConfig {
   deploy?: DeployConfig;
   /** Seconds the deploy check may take. Default 1800. */
   verifyTimeout?: number;
+  /**
+   * Seconds the working session has for its post-deploy check (an item with verify or post_deploy) before its
+   * main hears [check overdue]. Nothing is cleaned up on a timeout. Default 7200.
+   */
+  checkTimeout?: number;
   /** The repo's gc, run in the main checkout after the worktree is removed (sh -c). */
   gc?: string;
   /** Remove the worktree, its agent and its branches after a verified merge. Default true. */
