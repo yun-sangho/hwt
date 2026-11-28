@@ -24,8 +24,8 @@ export interface MergeQueueConfig {
   /** Deploy check run in the main checkout after the merge (sh -c). Exit 0 = passed. Env: HWT_MQ_ID, _BRANCH, _PR, _SHA. */
   verify?: string;
   /**
-   * The built-in deploy check (deploy.ts): the push runs of these workflows on every merged commit must succeed,
-   * then the URLs must answer. Runs before verify when both are set.
+   * The built-in deploy check (deploy.ts): the push runs on every merged commit (of the listed workflows, or of
+   * every workflow) must finish with success; a finished run is a finished deploy. Runs before verify when both are set.
    */
   deploy?: DeployConfig;
   /** Seconds the deploy check may take. Default 1800. */
