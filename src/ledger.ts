@@ -165,8 +165,9 @@ export interface InboxMessage {
   /** For one main only (otherwise the sender's worktree owner decides who reads it). */
   to?: string;
   /**
-   * false: a log entry (the main reads it on demand: hwt inbox --log, hwt status). It isn't put in front of the
-   * main, doesn't end hwt wait and never needs an ack. Absent or true: it needs the main's decision.
+   * false: a log entry (hwt inbox --log, hwt status). It is put in front of the main marked as needing nothing,
+   * so the main knows where things stand; it doesn't end hwt wait and never needs an ack. Absent or true: it
+   * needs the main's decision.
    */
   wake?: boolean;
   text: string;

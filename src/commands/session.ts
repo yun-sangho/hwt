@@ -10,6 +10,8 @@ import {
 import type { InboxMessage, Ledger } from "../ledger.ts";
 import { parse } from "../args.ts";
 import { liveDaemon } from "../daemon.ts";
+import { langFor } from "../config.ts";
+import { messages } from "../messages.ts";
 import { basename, die, has, inboxId, printJson, run, sleepMs, stamp } from "../util.ts";
 
 /**
@@ -62,8 +64,8 @@ export function cmdMain(): void {
 /**
  * hwt tell TEXT: a working session's message to its main session (the worktree's owner). It always lands in
  * the inbox first, then goes to whichever terminal that main has now. Never addresses a fixed id. With
- * wake: false (hwt's own notes, like a merge request the runner reads from the queue anyway) it is a log entry
- * only and isn't put in front of the main.
+ * wake: false (hwt's own notes, like a merge request the runner reads from the queue anyway) it is a log entry:
+ * it reaches the main marked as needing nothing (no decision, no ack), so the main knows without being asked.
  */
 export function tell(text: string, o: { wake?: boolean } = {}): { id: string; main: string | null; owner: string | null; delivered: boolean; inbox: true } {
   const wake = o.wake ?? true;
@@ -96,7 +98,9 @@ export function tell(text: string, o: { wake?: boolean } = {}): { id: string; ma
   let shown = text;
   if (who) shown += ` — ${who}${title ? `: ${title}` : ""}`;
   let delivered = false;
-  if (wake) for (const t of to) if (herdr.send(t, `${shown} (hwt inbox ${id})`)) delivered = true;
+  // A log entry (wake false) reaches the main too, marked as needing nothing, so the main always knows.
+  const tail = wake ? `(hwt inbox ${id})` : messages(langFor(main)).fyi(id);
+  for (const t of to) if (herdr.send(t, `${shown} ${tail}`)) delivered = true;
   return { id, main: to[0] ?? null, owner: ownerOf(l, branch), delivered, inbox: true };
 }
 

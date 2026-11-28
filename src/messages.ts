@@ -31,6 +31,8 @@ export interface Messages {
   baseUpdated: string;
   /** After a return: how to get back in line. */
   requeue: string;
+  /** Appended to a log entry put in front of a main: it only keeps the main's picture current. */
+  fyi(id: string): string;
   workerInstructions(self: string): string;
   taskProposal(id: string, title: string, touches: string): string;
   mainOnly(main: string, cmd: string, sessions: string): string;
@@ -67,6 +69,7 @@ const en: Messages = {
     `Something wrong: hwt mq problem ${id} "what and how" (the worktree stays, the main hears it and decides with the person whether to revert; fixes go in a new PR from here)`,
   verifyInTask: (verify) =>
     `After the deploy, these must hold in production (you check them when the queue sends [post-deploy check]):\n${verify.map((v) => `- ${v}`).join("\n")}`,
+  fyi: (id) => `(FYI, nothing to do and no ack: hwt inbox --log ${id})`,
   baseUpdated: "the merge queue merged the base into your PR branch; git pull before you commit more. CI runs again, nothing else to do",
   requeue: "Fix it, push, then hwt mq add --pr <n> again (you keep your place in line)",
   workerInstructions: (self) =>
@@ -134,6 +137,7 @@ const ko: Messages = {
     `이상 있으면: hwt mq problem ${id} "무엇이 어떻게" (워크트리는 남고 메인에 알려진다. revert 는 메인이 사용자와 정하고, 고침은 여기서 새 PR)`,
   verifyInTask: (verify) =>
     `배포 뒤 운영에서 성립해야 할 것(큐가 [배포 점검] 을 보내면 점검한다):\n${verify.map((v) => `- ${v}`).join("\n")}`,
+  fyi: (id) => `(알림: 할 일 없음, ack 불필요 · hwt inbox --log ${id})`,
   baseUpdated: "머지 큐가 베이스 브랜치를 PR 브랜치에 반영했다. 더 커밋하기 전에 git pull 한다. CI 는 다시 돌고, 따로 할 일은 없다",
   requeue: "고쳐서 push 한 뒤 hwt mq add --pr <n> 을 다시 한다(줄 순서는 유지된다)",
   workerInstructions: (self) =>

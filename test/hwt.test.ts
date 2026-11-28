@@ -431,8 +431,11 @@ describe("main-session workflow", () => {
     expect(hwt(["new", "feat/p-sub", "--no-space"], { cwd: wt, ...as("w1") }).code).toBe(1);
     expect(json(hwt(["claim"], { cwd: wt, ...as("w1") }))).toMatchObject({ id: "w1", path: wt, promoted_from: "t1" });
     expect(ledger().worktrees["feat/p"].owner).toBe("w1");
-    // Its old main has it in its log, but isn't interrupted: there is nothing for it to decide.
-    expect(fake().sent.filter((m) => m.to === "t1")).toEqual([]);
+    // Its old main is told, marked as needing nothing: there is nothing for it to decide.
+    const told = fake().sent.filter((m) => m.to === "t1");
+    expect(told).toHaveLength(1);
+    expect(told[0]!.text).toMatch(/^\[now a main\] .*\(FYI, nothing to do and no ack: hwt inbox --log \S+\)$/);
+    expect(hwt(["inbox"], as("t1")).out).toBe("");
     expect(hwt(["inbox"], as("t1")).out).toBe("");
     expect(hwt(["inbox", "--log"], as("t1")).out).toContain("[now a main] feat-p (feat/p)");
     // Now it makes worktrees of its own, off its branch, and their mail comes to it.
@@ -1289,7 +1292,10 @@ describe("merge queue runner", () => {
     expect(log).toContain("[merge request]");
     expect(log).not.toContain("[base updated]");
     expect(hwt(["inbox"], t1).out).toBe("");
-    expect(fake().sent.filter((m) => m.to === "t1")).toEqual([]);
+    // The main knows every merge request as it comes, marked as needing nothing (no ack).
+    const told = fake().sent.filter((m) => m.to === "t1");
+    expect(told.map((m) => m.text.startsWith("[merge request]"))).toEqual([true, true, true]);
+    expect(told.every((m) => m.text.includes("(FYI, nothing to do and no ack:"))).toBe(true);
     expect(json(hwt(["status"], t1)).log_recent.at(-1)).toContain("[merge returned]");
     expect(existsSync(wa)).toBe(false);
     // c fixes CI and queues again: it keeps its place in line.

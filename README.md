@@ -22,9 +22,10 @@ become a main of its own with `hwt claim` in its worktree. State lives in a ledg
 restarted session picks up where the last one stopped. Writes take a lock and keep the ledger they replace as
 `ledger.json.bak`; a ledger hwt can't read stops the command rather than being read, and overwritten, as empty.
 
-Mains are woken only for decisions (merge approvals, task proposals, unblocked tasks, a working session's
-`hwt tell`); merge requests, returns and deploy failures are log entries (`hwt inbox --log`). The PR, its
-review and fixes stay in the working session.
+Mains hear everything as it happens. Decisions (merge approvals, task proposals, unblocked tasks, a working
+session's `hwt tell`) wait for an ack; merge requests, returns and rebase requests are log entries, put in front
+of the main marked "FYI, nothing to do" (and kept in `hwt inbox --log`). The PR, its review and fixes stay in the
+working session.
 
 ## Requirements
 
