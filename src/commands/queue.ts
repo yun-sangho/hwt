@@ -9,6 +9,7 @@ import { readLedger, updateLedger, type MergeState } from "../ledger.ts";
 import { messages } from "../messages.ts";
 import { basename, die, printJson, shortId, stamp } from "../util.ts";
 import { tell } from "./session.ts";
+import { followBranch } from "../session.ts";
 import { removeWorktree } from "./worktree.ts";
 import {
   blockedBy, checkList, IN_FLIGHT, leaseLive, move, mqChecks, nextSeq, OPEN, ordered, previewQueue, runQueue, STATES, WAITING, type PreviewEntry,
@@ -152,6 +153,7 @@ export function cmdMq(args: string[]): void {
       if (priority !== undefined && !Number.isInteger(priority)) die(`--priority needs a whole number: ${a.opt.priority}`);
       const here = toplevel();
       if (!here || samePath(here, main)) die("mq add runs in the working worktree (it queues that branch)");
+      followBranch(main);
       const b = currentBranch();
       const initialId = shortId("M");
       let id = initialId;
