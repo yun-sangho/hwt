@@ -862,7 +862,7 @@ describe("merge queue runner", () => {
   });
 
   describe("built-in deploy check", () => {
-    const deployEnv = { env: { HWT_CHILD: "", HC_TERMINAL_ID: "t1", HWT_DEPLOY_POLL_MS: "50", HWT_DEPLOY_APPEAR_MS: "400", HWT_DEPLOY_URL_TRIES: "2" } };
+    const deployEnv = { env: { HWT_CHILD: "", HC_TERMINAL_ID: "t1", HWT_DEPLOY_POLL_MS: "50", HWT_DEPLOY_APPEAR_MS: "400" } };
     const runDeploy = () => json(hwt(["mq", "run"], deployEnv));
     /** Runs for merge commits (known only after the merge), finishing after `after` polls. */
     const runsFor = (shas: Record<string, { conclusion: "success" | "failure" | "cancelled"; after?: number }>) =>
@@ -872,10 +872,8 @@ describe("merge queue runner", () => {
         }));
       });
 
-    test("waits for the deploy run on the merge commit and the URL", () => {
-      const page = join(dir, "site.html");
-      writeFileSync(page, "ok");
-      config({ mainSession: true, mergeQueue: { deploy: { workflows: ["deploy.yml"], urls: [`file://${page}`] } } });
+    test("waits for the deploy run on the merge commit", () => {
+      config({ mainSession: true, mergeQueue: { deploy: { workflows: ["deploy.yml"] } } });
       sh(["git", "push", "-q", "origin", "main"]);
       work("feat/a", 1);
       // No run yet for the merge commit: the check waits, then gives up (appear timeout).
@@ -883,13 +881,38 @@ describe("merge queue runner", () => {
       expect(r.merged).toEqual(["feat/a"]);
       expect(item("feat/a")).toMatchObject({ state: "failed" });
       expect(item("feat/a").why).toContain("no deploy run appeared: deploy.yml for feat/a");
-      // The run shows up and succeeds after a few polls; the URL answers: done, cleaned up.
+      // The run shows up and succeeds after a few polls: done, cleaned up.
       runsFor({ [item("feat/a").sha]: { conclusion: "success", after: 3 } });
       const l = ledger();
       for (const m of l.merges) if (m.branch === "feat/a") Object.assign(m, { state: "verifying" });
       writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
       runDeploy();
       expect(item("feat/a")).toMatchObject({ state: "done" });
+    });
+
+    test("no workflows listed: every push run on the commit, and a commit with none deployed nothing", () => {
+      config({ mainSession: true, mergeQueue: { deploy: {} } });
+      sh(["git", "push", "-q", "origin", "main"]);
+      work("feat/a", 1);
+      // No runs at all: nothing to deploy, done.
+      runDeploy();
+      expect(item("feat/a")).toMatchObject({ state: "done" });
+      work("feat/b", 2);
+      runDeploy();
+      const b = item("feat/b");
+      // Two workflows ran on b's merge commit; one failed: the check fails on it.
+      setFake((s) => {
+        s.runs = [
+          { databaseId: 1, workflow: "deploy-web", sha: b.sha, status: "in_progress", conclusion: "", completeAfter: 2, then: "success" },
+          { databaseId: 2, workflow: "deploy-api", sha: b.sha, status: "in_progress", conclusion: "", completeAfter: 2, then: "failure" },
+        ];
+      });
+      const l = ledger();
+      for (const m of l.merges) if (m.branch === "feat/b") Object.assign(m, { state: "verifying" });
+      writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
+      runDeploy();
+      expect(item("feat/b")).toMatchObject({ state: "failed" });
+      expect(item("feat/b").why).toContain("deploy failure: deploy-api for feat/b");
     });
 
     test("batch: every merged commit's run must succeed; a cancelled one in the middle fails unless cancelledOk", () => {
@@ -916,21 +939,19 @@ describe("merge queue runner", () => {
       }
     });
 
-    test("a failed run fails with its log command; a URL that doesn't answer fails", () => {
-      config({ mainSession: true, mergeQueue: { deploy: { workflows: ["deploy.yml"], urls: [`file://${join(dir, "missing.html")}`] } } });
+    test("a failed run fails with its log command", () => {
+      config({ mainSession: true, mergeQueue: { deploy: { workflows: ["deploy.yml"] } } });
       sh(["git", "push", "-q", "origin", "main"]);
       work("feat/a", 1);
       runDeploy();
-      const a = item("feat/a");
-      for (const [conclusion, why] of [["failure", "deploy failure: deploy.yml for feat/a"], ["success", "deploy ran, but file://"]] as const) {
-        runsFor({ [a.sha]: { conclusion, after: 2 } });
-        const l = ledger();
-        for (const m of l.merges) if (m.branch === "feat/a") Object.assign(m, { state: "verifying" });
-        writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
-        runDeploy();
-        expect(item("feat/a")).toMatchObject({ state: "failed" });
-        expect(item("feat/a").why).toContain(why);
-      }
+      runsFor({ [item("feat/a").sha]: { conclusion: "failure", after: 2 } });
+      const l = ledger();
+      for (const m of l.merges) if (m.branch === "feat/a") Object.assign(m, { state: "verifying" });
+      writeFileSync(join(repo, ".git", "hwt", "ledger.json"), JSON.stringify(l));
+      runDeploy();
+      expect(item("feat/a")).toMatchObject({ state: "failed" });
+      expect(item("feat/a").why).toContain("deploy failure: deploy.yml for feat/a");
+      expect(item("feat/a").history.at(-1).why).toContain("deploy failure");
     });
   });
 
