@@ -44,6 +44,8 @@ export interface WorktreeRecord {
   self_main?: boolean;
   /** What must hold in production once its PR is deployed (hwt new --verify); its merge request carries it. */
   verify?: string[];
+  /** Its PR, once the working session queued it (hwt mq add --pr): the Herdr space is named "pr-<n> <title>". */
+  pr?: number;
   /** "folder": a child in a plain folder, no checkout of its own. Default: a git worktree. */
   kind?: "worktree" | "folder";
   /** The Herdr space hwt opened for it. */
