@@ -7,7 +7,7 @@ import { childKey, isGit, projectRoot, requireGit } from "../project.ts";
 import * as herdr from "../herdr.ts";
 import { readLedger, updateLedger, type MergeState } from "../ledger.ts";
 import { messages } from "../messages.ts";
-import { die, printJson, shortId, stamp } from "../util.ts";
+import { basename, die, printJson, shortId, stamp } from "../util.ts";
 import { tell } from "./session.ts";
 import { removeWorktree } from "./worktree.ts";
 import {
@@ -183,8 +183,14 @@ export function cmdMq(args: string[]): void {
         };
         for (const m of old) move(m, "dropped", b, `replaced by ${id}`, true);
         l.merges = [...merges, item];
+        if (w && pr) w.pr = pr;
       });
-      // A log entry only: the runner takes it from the queue; the main is woken only if it needs a decision.
+      // The sidebar shows the PR: its space becomes "pr-<n> <title>".
+      if (pr) {
+        const w = readLedger(main).worktrees[b];
+        for (const s of herdr.spacesIn(here)) herdr.renameSpace(s, herdr.spaceName(w?.title || basename(here), pr));
+      }
+      // A log entry: the runner takes it from the queue; the main hears of it, marked as needing nothing.
       tell(`${messages(langFor(main)).tags.mergeRequest} ${id} ${b}${pr ? ` PR #${pr}` : ""}${text ? ` — ${text}` : ""}`, { wake: false });
       const queued = (readLedger(main).merges ?? []).find((m) => m.id === id);
       return printJson({

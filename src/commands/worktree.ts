@@ -183,6 +183,7 @@ export function cmdNew(args: string[]): void {
       ...((a.opt.hold ?? prev?.hold) ? { hold: a.opt.hold ?? prev?.hold } : {}),
       ...((verify.length ? verify : prev?.verify)?.length ? { verify: verify.length ? verify : prev!.verify } : {}),
       ...(folder ? { kind: "folder" as const } : {}),
+      ...(prev?.pr ? { pr: prev.pr } : {}),
     };
   });
   // The space is named after the work and its tab after the worktree, so the sidebar shows
@@ -193,7 +194,8 @@ export function cmdNew(args: string[]): void {
     warn(`no live agent in ${basename(wt)}: closing its space (and any terminal left there) to open it again with the agent`);
     for (const id of open) herdr.closeSpace(id);
   }
-  const spaceTitle = title || readLedger(main).worktrees[branch]?.title || "";
+  const rec = readLedger(main).worktrees[branch];
+  const spaceTitle = herdr.spaceName(title || rec?.title || "", rec?.pr);
   const r = herdr.newSpace({ folder: wt, name: spaceTitle || undefined, tab: spaceTitle ? name : branch, argv, focus: false });
   if (!r.ok) die(`herdr-app space.new failed: ${r.error}`);
   const { space, tab, terminal } = r.value;
@@ -530,11 +532,13 @@ export function cmdTitle(args: string[]): void {
     key = name;
     spaces = w.space ? [w.space] : [];
   }
+  let pr: number | undefined;
   updateLedger(main, (l) => {
     const w = l.worktrees[key];
     if (w) w.title = text;
+    pr = w?.pr;
   });
-  for (const id of spaces) herdr.renameSpace(id, text);
+  for (const id of spaces) herdr.renameSpace(id, herdr.spaceName(text, pr));
   printJson({ worktree: hit ? (isGit(main) ? basename(hit[1].path) : hit[0]) : target, title: text });
 }
 

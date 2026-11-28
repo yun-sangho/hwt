@@ -205,6 +205,23 @@ describe("new / rm", () => {
     writeFileSync(env.HWT_FAKE_STATE!, JSON.stringify(st));
   };
 
+  test("mq add --pr names the space pr-<n> <title>; title and a reopen keep it", () => {
+    config({ mainSession: true });
+    const o = json(hwt(["new", "feat/p", "--title", "P work", "--task", "do p"]));
+    const name = () => fake().spaces.find((x) => x.folder === o.path)?.name;
+    expect(name()).toBe("P work");
+    expect(hwt(["mq", "add", "--pr", "7"], { cwd: o.path }).code).toBe(0);
+    expect(name()).toBe("pr-7 P work");
+    expect(ledger().worktrees["feat/p"].pr).toBe(7);
+    hwt(["title", "feat/p", "P2"]);
+    expect(name()).toBe("pr-7 P2");
+    expect(ledger().worktrees["feat/p"].title).toBe("P2");
+    exitAgents();
+    hwt(["new", "feat/p", "--resume-from", o.session]);
+    expect(ledger().worktrees["feat/p"].pr).toBe(7);
+    expect(fake().spaces.filter((x) => x.folder === o.path).map((x) => x.name)).toEqual(["pr-7 P2"]);
+  });
+
   test("new --resume-from with its space still open but no live agent: the space is opened again with the agent", () => {
     config({ mainSession: true });
     const o = json(hwt(["new", "feat/r", "--title", "R work", "--task", "do r"]));

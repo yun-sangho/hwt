@@ -100,6 +100,9 @@ export function selectSpace(id: string): void {
   appDo("space.select", { id });
 }
 
+/** A worktree's space name: its title, behind "pr-<n>" once it has a PR (the sidebar shows which PR it is). */
+export const spaceName = (title: string, pr?: number | null): string => (pr ? `pr-${pr}${title ? ` ${title}` : ""}` : title);
+
 export function renameSpace(id: string, name: string): void {
   appDo("space.rename", { id, name });
 }

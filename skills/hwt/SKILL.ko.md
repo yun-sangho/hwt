@@ -11,7 +11,7 @@ description: git 워크트리를 만들거나 지울 때, 그리고 메인 세�
 
 - **git 레포**: 자식 세션마다 자기 워크트리를 받는다. **일반 폴더**(git 아님): `hwt new <이름> --task …` 는 체크아웃 없이 같은 폴더(또는 `--dir <하위 폴더>`)에 Herdr 스페이스를 열어 자식을 띄운다. 폴더 자식들은 파일을 공유하므로 서로 다른 파일이나 하위 폴더를 맡긴다. PR·머지 큐가 없고, 끝나면 `hwt tell` 로 `[완료]` 를 보고한다. 장부는 `~/.local/state/hwt/projects/` 에 있다. 일반 폴더는 `.hwt.json` 이 있을 때만 세션 시작 브리핑을 받는다(`hwt init` 도 거기서 된다)
 - git 레포에서 워크트리는 hwt 로만 만들고 지운다. `git worktree add`, EnterWorktree, `.claude/worktrees/` 는 쓰지 않는다.
-- 체크아웃 위치: `<워크트리 루트>/<repo>/<브랜치 slug>`(Herdr 의 New worktree 와 같은 규칙, 기본 `~/.herdr/worktrees`). 그래서 Herdr 사이드바에서 레포 아래에 보인다.
+- 체크아웃 위치: `<워크트리 루트>/<repo>/<브랜치 slug>`(Herdr 의 New worktree 와 같은 규칙, 기본 `~/.herdr/worktrees`). 그래서 Herdr 사이드바에서 레포 아래에 보인다. 스페이스 이름은 작업 제목이고, `hwt mq add --pr <n>` 뒤에는 `pr-<n> <제목>` 이 된다(`hwt title` 로 바꿔도 앞의 `pr-<n>` 은 남는다).
 - Herdr 가 꺼져 있으면 `hwt new` 는 거부한다. `--no-space` 는 체크아웃만 만든다.
 
 ## 메인 세션 작업 방식 (메인 체크아웃 `.hwt.json` 에 `"mainSession": true`)

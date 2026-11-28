@@ -12,7 +12,7 @@ description: Use when creating or removing git worktrees, or when working the ma
 - **Git repo**: each child session gets its own worktree. **Plain folder** (no git): `hwt new <name> --task …` opens the child in a Herdr space in the same folder (or `--dir <subfolder>`), with no checkout. Folder children share files, so give them separate files or subfolders; they have no PR or merge queue and report `[done]` with `hwt tell`. Their ledger is in `~/.local/state/hwt/projects/`. A folder takes part in session-start briefings only with a `.hwt.json` (`hwt init` works there too)
 
 - In a git repo, make and remove worktrees only with hwt. Don't use `git worktree add`, EnterWorktree or `.claude/worktrees/`.
-- Checkouts live at `<worktrees root>/<repo>/<branch slug>` (Herdr's New worktree rule), so they show under the repo in Herdr's sidebar.
+- Checkouts live at `<worktrees root>/<repo>/<branch slug>` (Herdr's New worktree rule), so they show under the repo in Herdr's sidebar. The space is named after the title; after `hwt mq add --pr <n>` it is `pr-<n> <title>` (`hwt title` keeps the `pr-<n>`).
 - `hwt new` refuses when Herdr isn't running; `--no-space` makes the checkout only.
 
 ## Main-session workflow (`"mainSession": true` in the main checkout's .hwt.json)
