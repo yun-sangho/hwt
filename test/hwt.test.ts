@@ -334,6 +334,20 @@ describe("main-session workflow", () => {
   };
   const as = (t: string) => ({ env: { HC_TERMINAL_ID: t } });
 
+  test("a worktree switched to another branch keeps its owner: tell moves its record to the new branch", () => {
+    config({ mainSession: true });
+    terminal("t1", repo);
+    hwt(["claim"], as("t1"));
+    terminal("t2", repo);
+    hwt(["claim"], as("t2"));
+    const wt = json(hwt(["new", "feat/s", "--no-space"], as("t1"))).path;
+    sh(["git", "switch", "-q", "-c", "feat/s-2"], wt);
+    hwt(["tell", "[merge request]", "x"], { cwd: wt });
+    expect(ledger().worktrees["feat/s"]).toBeUndefined();
+    expect(ledger().worktrees["feat/s-2"].owner).toBe("t1");
+    expect(fake().sent.map((m) => m.to)).toEqual(["t1"]);
+  });
+
   test("tell from a worktree: inbox first, then the main that made it; ack", () => {
     config({ mainSession: true });
     terminal("t1", repo);

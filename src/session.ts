@@ -5,7 +5,7 @@
 // worktree. Each main owns the worktrees it makes, and those working sessions report to it alone.
 import { basename } from "./util.ts";
 import { mainConfig, langFor } from "./config.ts";
-import { samePath } from "./git.ts";
+import { currentBranch, samePath, toplevel } from "./git.ts";
 import { childKey, isGit, workDir } from "./project.ts";
 import * as herdr from "./herdr.ts";
 import { appendInbox, readLedger, updateLedger, type InboxMessage, type Ledger, type MainRecord } from "./ledger.ts";
@@ -45,6 +45,29 @@ export function owns(me: string, owner: string | null | undefined): boolean {
 }
 
 /** The main that owns the worktree on <branch>, if any. */
+/**
+ * A working session that switched its worktree to another branch (git switch -c …-2): its record is still under
+ * the old branch, so its owner, task and criteria aren't found and its messages go to every main. Move the record
+ * (and the tasks and notes of that branch) to the branch it is on now. Returns the key it is under.
+ */
+export function followBranch(main: string): string {
+  if (!isGit(main)) return "";
+  const top = toplevel();
+  if (!top || samePath(top, main)) return "";
+  const b = currentBranch(top);
+  if (!b || readLedger(main).worktrees[b]) return b;
+  updateLedger(main, (l) => {
+    if (l.worktrees[b]) return;
+    const old = Object.entries(l.worktrees).find(([, w]) => w.state === "active" && w.kind !== "folder" && samePath(w.path, top))?.[0];
+    if (!old) return;
+    l.worktrees[b] = l.worktrees[old]!;
+    delete l.worktrees[old];
+    for (const t of l.tasks ?? []) if (t.branch === old && t.state !== "done" && t.state !== "dropped") t.branch = b;
+    for (const n of l.notes) if (n.branch === old) n.branch = b;
+  });
+  return b;
+}
+
 export function ownerOf(l: Ledger, branch: string): string | null {
   return l.worktrees[branch]?.owner ?? null;
 }

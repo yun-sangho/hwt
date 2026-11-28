@@ -5,7 +5,7 @@ import { childKey, findChild, isGit, projectRoot, workDir } from "../project.ts"
 import * as herdr from "../herdr.ts";
 import { ack, appendInbox, logInbox, markShown, readInbox, readLedger, shownIds, unackedInbox, updateLedger } from "../ledger.ts";
 import {
-  actsAsMain, claimMain, liveTerminal, mainOnly, myMain, noteIsOver, ownerOf, owns, readsMessage, recipients, selfId,
+  actsAsMain, claimMain, followBranch, liveTerminal, mainOnly, myMain, noteIsOver, ownerOf, owns, readsMessage, recipients, selfId,
 } from "../session.ts";
 import type { InboxMessage, Ledger } from "../ledger.ts";
 import { parse } from "../args.ts";
@@ -71,6 +71,7 @@ export function tell(text: string, o: { wake?: boolean } = {}): { id: string; ma
   const wake = o.wake ?? true;
   if (!text) die("usage: hwt tell <text>");
   const main = projectRoot();
+  followBranch(main);
   const l0 = readLedger(main);
   const here = workDir(main, l0);
   const branch = childKey(main, l0);
