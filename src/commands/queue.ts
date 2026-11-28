@@ -180,6 +180,7 @@ export function cmdMq(args: string[]): void {
       return printJson({
         merge: id, branch: b, state: "queued", place_kept: kept !== undefined,
         runner: liveDaemon() ? "daemon" : "main (hwt mq run)",
+        next: "end your turn: don't wait for or poll CI, the merge or the deploy; the queue messages you if there is something to fix",
       });
     }
     case "ls": {
